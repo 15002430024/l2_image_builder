@@ -1,0 +1,56 @@
+# Level2 图像构建配置文件
+# 所有路径和参数都可以在此自定义
+
+# ========== 数据路径 ==========
+raw_data_dir: "/raw_data"
+output_dir: "/processed_data/l2_images"
+
+# ========== 图像参数 ==========
+num_channels: 15
+num_price_bins: 8
+num_qty_bins: 8
+
+# ========== 分位数百分位 ==========
+# 7个切割点定义8个区间
+percentiles:
+  - 12.5
+  - 25
+  - 37.5
+  - 50
+  - 62.5
+  - 75
+  - 87.5
+
+# ========== 大单阈值 ==========
+# 当日计算: Mean(V) + threshold_std_multiplier × Std(V)
+threshold_std_multiplier: 1.0
+
+# ========== 时间过滤（连续竞价时段）==========
+# 格式: HHMMSSmmm
+am_start: 93000000   # 09:30:00.000
+am_end: 113000000    # 11:30:00.000
+pm_start: 130000000  # 13:00:00.000
+pm_end: 145700000    # 14:57:00.000
+
+# ========== 存储参数 ==========
+lmdb_map_size: 104857600  # 100MB
+use_lz4: true
+
+# ========== 处理引擎 ==========
+use_polars: true
+n_workers: 8
+chunk_size: 100
+
+# ========== 数据源文件命名模式 ==========
+sh_trade_pattern: "{date}_sh_trade_data.parquet"
+sh_order_pattern: "{date}_sh_order_data.parquet"
+sz_trade_pattern: "{date}_sz_trade_data.parquet"
+sz_order_pattern: "{date}_sz_order_data.parquet"
+sh_snapshot_pattern: "{date}_sh_market_data_3s.parquet"
+sz_snapshot_pattern: "{date}_sz_market_data_3s.parquet"
+
+# ========== 诊断参数 ==========
+min_nonzero_pixels_trade: 20
+min_nonzero_pixels_order: 30
+min_fill_rate_trade: 0.30
+min_fill_rate_order: 0.50
