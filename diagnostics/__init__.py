@@ -3,6 +3,9 @@
 
 生成通道填充率、稀疏度等监控指标
 提供图像质量诊断和健康检查功能
+
+v3 新增：
+- validate_channel_constraints(): 验证通道数学约束 (Ch7=Ch9+Ch11, Ch8=Ch10+Ch12)
 """
 
 from .reporter import (
@@ -19,6 +22,7 @@ from .reporter import (
     generate_daily_report,
     generate_summary_statistics,
     print_daily_summary,
+    validate_channel_constraints,  # v3新增
     # 类
     DiagnosticsReporter,
 )
@@ -38,6 +42,7 @@ __all__ = [
     'generate_daily_report',
     'generate_summary_statistics',
     'print_daily_summary',
+    'validate_channel_constraints',  # v3新增
     # 类
     'DiagnosticsReporter',
 ]

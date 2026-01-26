@@ -2,8 +2,14 @@
 Level2 图像构建器
 
 核心类，负责将 Level2 数据转换为 [15, 8, 8] 的三维图像
+
+v3 架构更新：
+- 上交所：委托表必须包含 IsAggressive 和 BizIndex 字段
+- 深交所：自动构建 ActiveSeqs 实现主动/被动分流
+- 新增通道约束验证（Ch7=Ch9+Ch11, Ch8=Ch10+Ch12）
 """
 
+import logging
 from typing import Dict, Optional, Tuple, Set, Union
 import numpy as np
 
@@ -19,9 +25,13 @@ from ..calculator.quantile import (
 )
 from ..calculator.big_order import BigOrderCalculator, compute_all
 from ..cleaner.sz_cancel_enricher import enrich_sz_cancel_price
+from ..diagnostics.reporter import validate_channel_constraints
 from .normalizer import normalize_image
 from .sh_builder import SHImageBuilder
-from .sz_builder import SZImageBuilder
+from .sz_builder import SZImageBuilder, build_active_seqs_from_trade
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 if POLARS_AVAILABLE:
     import polars as pl
@@ -418,19 +428,29 @@ class Level2ImageBuilder:
         df_trade: DataFrame,
         df_order: DataFrame,
         use_vectorized: bool = True,
+        validate_constraints: bool = True,
     ) -> Optional[np.ndarray]:
         """
         构建单只股票的图像（统一入口）
         
-        自动完成：分位数计算 → 母单还原 → 阈值计算 → 图像构建 → 归一化
+        自动完成：分位数计算 → 母单还原 → 阈值计算 → 图像构建 → 约束验证 → 归一化
+        
+        v3 架构变更：
+        - 上交所：委托表必须包含 IsAggressive 和 BizIndex 字段
+        - 深交所：自动构建 ActiveSeqs 实现主动/被动分流
+        - 新增通道约束验证（Ch7=Ch9+Ch11, Ch8=Ch10+Ch12）
         
         Args:
             df_trade: 成交表（已清洗）
             df_order: 委托表（已清洗）
             use_vectorized: 是否使用向量化方法（推荐）
+            validate_constraints: 是否验证 v3 通道约束（默认 True）
         
         Returns:
             归一化后的 [15, 8, 8] 图像，若数据为空返回 None
+        
+        Raises:
+            ValueError: 上交所委托表缺少必需字段时抛出
         
         Example:
             >>> builder = Level2ImageBuilder("600519.SH", "2026-01-21")
@@ -446,6 +466,20 @@ class Level2ImageBuilder:
             return None
         
         is_polars = is_polars_df(df_trade) or is_polars_df(df_order)
+        
+        # v3: 上交所委托表字段验证（必须包含 IsAggressive 和 BizIndex）
+        if self._is_sh:
+            required_fields = ['IsAggressive', 'BizIndex']
+            if is_polars:
+                order_columns = df_order.columns
+            else:
+                order_columns = list(df_order.columns)
+            missing = [f for f in required_fields if f not in order_columns]
+            if missing:
+                raise ValueError(
+                    f"上交所委托表缺少必需字段: {missing}。"
+                    f"请确保数据已预处理。BizIndex 是排序必需字段！"
+                )
         
         # 1. 计算分位数
         if self._is_sh:
@@ -467,6 +501,7 @@ class Level2ImageBuilder:
         
         # 3. 构建图像
         if self._is_sh:
+            # v3: 上交所使用 SHImageBuilder（内部使用 IsAggressive 字段）
             sh_builder = SHImageBuilder(
                 price_bins=price_bins,
                 qty_bins=qty_bins,
@@ -479,9 +514,10 @@ class Level2ImageBuilder:
             else:
                 image = sh_builder.build(df_trade, df_order)
         else:
-            # 深交所需要先关联撤单价格
+            # v3: 深交所先关联撤单价格，然后构建 ActiveSeqs
             df_trade_enriched = enrich_sz_cancel_price(df_trade, df_order)
             
+            # v3: 构建主动委托索引（SZImageBuilder 内部会自动构建）
             sz_builder = SZImageBuilder(
                 price_bins=price_bins,
                 qty_bins=qty_bins,
@@ -497,6 +533,14 @@ class Level2ImageBuilder:
         # 保存原始图像到实例
         self.image = image.astype(np.float32)
         
+        # v3: 验证通道约束（Ch7=Ch9+Ch11, Ch8=Ch10+Ch12）
+        if validate_constraints:
+            constraint_result = validate_channel_constraints(self.image)
+            if not constraint_result['valid']:
+                logger.warning(
+                    f"{self.stock_code}: 通道约束违反 - {constraint_result['errors']}"
+                )
+        
         # 4. 归一化
         normalized = normalize_image(image)
         
@@ -511,9 +555,15 @@ class Level2ImageBuilder:
         config: Optional[Config] = None,
         trade_date: str = "",
         use_vectorized: bool = True,
+        validate_constraints: bool = True,
     ) -> Optional[np.ndarray]:
         """
         类方法：快速构建单只股票图像
+        
+        v3 架构变更：
+        - 上交所：委托表必须包含 IsAggressive 和 BizIndex 字段
+        - 深交所：自动构建 ActiveSeqs
+        - 新增通道约束验证
         
         Args:
             stock_code: 股票代码，如 '600519.SH' 或 '000001.SZ'
@@ -522,6 +572,7 @@ class Level2ImageBuilder:
             config: 配置对象（可选）
             trade_date: 交易日期（可选）
             use_vectorized: 是否使用向量化方法
+            validate_constraints: 是否验证 v3 通道约束（默认 True）
         
         Returns:
             归一化后的 [15, 8, 8] 图像
@@ -532,7 +583,9 @@ class Level2ImageBuilder:
             ... )
         """
         builder = cls(stock_code, trade_date, config)
-        return builder.build_single_stock(df_trade, df_order, use_vectorized)
+        return builder.build_single_stock(
+            df_trade, df_order, use_vectorized, validate_constraints
+        )
 
 
 def build_l2_image(
@@ -541,9 +594,15 @@ def build_l2_image(
     df_order: DataFrame,
     config: Optional[Config] = None,
     use_vectorized: bool = True,
+    validate_constraints: bool = True,
 ) -> Optional[np.ndarray]:
     """
     便捷函数：构建 Level2 图像
+    
+    v3 架构变更：
+    - 上交所：委托表必须包含 IsAggressive 和 BizIndex 字段
+    - 深交所：自动构建 ActiveSeqs
+    - 新增通道约束验证
     
     Args:
         stock_code: 股票代码，如 '600519.SH' 或 '000001.SZ'
@@ -551,6 +610,7 @@ def build_l2_image(
         df_order: 委托表（已清洗）
         config: 配置对象（可选）
         use_vectorized: 是否使用向量化方法
+        validate_constraints: 是否验证 v3 通道约束（默认 True）
     
     Returns:
         归一化后的 [15, 8, 8] 图像
@@ -563,7 +623,8 @@ def build_l2_image(
     """
     return Level2ImageBuilder.build_image(
         stock_code, df_trade, df_order, config, 
-        use_vectorized=use_vectorized
+        use_vectorized=use_vectorized,
+        validate_constraints=validate_constraints,
     )
 
 
@@ -573,9 +634,15 @@ def build_l2_image_with_stats(
     df_order: DataFrame,
     config: Optional[Config] = None,
     use_vectorized: bool = True,
+    validate_constraints: bool = True,
 ) -> Tuple[Optional[np.ndarray], dict, np.ndarray]:
     """
     便捷函数：构建 Level2 图像并返回统计信息
+    
+    v3 架构变更：
+    - 上交所：委托表必须包含 IsAggressive 和 BizIndex 字段
+    - 深交所：自动构建 ActiveSeqs
+    - 新增通道约束验证
     
     Args:
         stock_code: 股票代码
@@ -583,6 +650,7 @@ def build_l2_image_with_stats(
         df_order: 委托表（已清洗）
         config: 配置对象（可选）
         use_vectorized: 是否使用向量化方法
+        validate_constraints: 是否验证 v3 通道约束（默认 True）
     
     Returns:
         (normalized_image, channel_stats, raw_image)
@@ -597,7 +665,9 @@ def build_l2_image_with_stats(
         >>> print(stats['all_trade']['sum'])
     """
     builder = Level2ImageBuilder(stock_code, "", config)
-    normalized = builder.build_single_stock(df_trade, df_order, use_vectorized)
+    normalized = builder.build_single_stock(
+        df_trade, df_order, use_vectorized, validate_constraints
+    )
     
     if normalized is None:
         return None, {}, np.zeros((15, 8, 8), dtype=np.float32)

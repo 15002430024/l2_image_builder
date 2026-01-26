@@ -2,6 +2,12 @@
 诊断报告模块
 
 生成图像质量诊断报告，监控通道填充率和健康状态
+
+v3 架构新增功能：
+- validate_channel_constraints(): 验证通道数学约束 (Ch7=Ch9+Ch11, Ch8=Ch10+Ch12)
+- 更新 CHANNEL_NAMES 以反映 v3 语义（Ch9/10 为委托而非成交）
+- check_health() 新增约束检查
+- generate_stock_diagnostics() 新增 v3_constraints 信息
 """
 
 import numpy as np
@@ -12,10 +18,13 @@ from datetime import datetime
 
 
 # 通道名称常量
+# v3 更新: Ch9/10 从"成交"改为"委托"，反映数据来源于委托表
 CHANNEL_NAMES = [
-    '全部成交', '主动买入', '主动卖出', '大买单', '大卖单',
-    '小买单', '小卖单', '买单', '卖单', '委托主动买', '委托主动卖',
-    '非主动买', '非主动卖', '撤买', '撤卖'
+    '全部成交', '主动买入成交', '主动卖出成交', '大买单', '大卖单',
+    '小买单', '小卖单', '买单', '卖单', 
+    '主动买入委托',   # v3: 从"委托主动买"改为"主动买入委托"，强调来源于委托表
+    '主动卖出委托',   # v3: 从"委托主动卖"改为"主动卖出委托"，强调来源于委托表
+    '非主动买入', '非主动卖出', '撤买', '撤卖'
 ]
 
 # 通道分类
@@ -37,7 +46,93 @@ HEALTH_THRESHOLDS = {
     'cancel_rate_max': 0.50,          # 撤单率最大值
     'trade_order_ratio_min': 0.2,     # 成交/委托比最小值 (1:5)
     'trade_order_ratio_max': 0.5,     # 成交/委托比最大值 (1:2)
+    
+    # v3新增：约束容差阈值
+    'constraint_tolerance': 1e-6,     # 通道约束验证容差
 }
+
+
+def validate_channel_constraints(image: np.ndarray) -> Dict:
+    """
+    v3: 验证通道数学约束
+    
+    约束关系（严格互斥分解）：
+    - Ch7 = Ch9 + Ch11 (买单 = 主动买入委托 + 非主动买入)
+    - Ch8 = Ch10 + Ch12 (卖单 = 主动卖出委托 + 非主动卖出)
+    
+    Args:
+        image: [15, 8, 8] 的图像数据
+    
+    Returns:
+        {
+            'valid': bool,           # 所有约束是否都满足
+            'buy_constraint': {      # 买方约束详情
+                'ch7': float, 'ch9': float, 'ch11': float,
+                'diff': float,       # Ch7 - (Ch9 + Ch11) 的差值
+                'valid': bool        # 该约束是否满足
+            },
+            'sell_constraint': {     # 卖方约束详情
+                'ch8': float, 'ch10': float, 'ch12': float,
+                'diff': float,       # Ch8 - (Ch10 + Ch12) 的差值
+                'valid': bool        # 该约束是否满足
+            },
+            'errors': List[str]      # 错误消息列表
+        }
+    """
+    if image.shape != (15, 8, 8):
+        raise ValueError(f"Invalid image shape: {image.shape}, expected (15, 8, 8)")
+    
+    tolerance = HEALTH_THRESHOLDS['constraint_tolerance']
+    errors = []
+    
+    # 计算各通道总和
+    ch7_sum = float(image[7].sum())    # 买单
+    ch8_sum = float(image[8].sum())    # 卖单
+    ch9_sum = float(image[9].sum())    # 主动买入委托
+    ch10_sum = float(image[10].sum())  # 主动卖出委托
+    ch11_sum = float(image[11].sum())  # 非主动买入
+    ch12_sum = float(image[12].sum())  # 非主动卖出
+    
+    # 买方约束: Ch7 = Ch9 + Ch11
+    buy_expected = ch9_sum + ch11_sum
+    buy_diff = ch7_sum - buy_expected
+    buy_valid = abs(buy_diff) <= tolerance
+    
+    if not buy_valid:
+        errors.append(
+            f"买方约束违反: Ch7({ch7_sum:.4f}) != Ch9({ch9_sum:.4f}) + Ch11({ch11_sum:.4f}), "
+            f"差值={buy_diff:.4f}"
+        )
+    
+    # 卖方约束: Ch8 = Ch10 + Ch12
+    sell_expected = ch10_sum + ch12_sum
+    sell_diff = ch8_sum - sell_expected
+    sell_valid = abs(sell_diff) <= tolerance
+    
+    if not sell_valid:
+        errors.append(
+            f"卖方约束违反: Ch8({ch8_sum:.4f}) != Ch10({ch10_sum:.4f}) + Ch12({ch12_sum:.4f}), "
+            f"差值={sell_diff:.4f}"
+        )
+    
+    return {
+        'valid': buy_valid and sell_valid,
+        'buy_constraint': {
+            'ch7': ch7_sum,
+            'ch9': ch9_sum,
+            'ch11': ch11_sum,
+            'diff': buy_diff,
+            'valid': buy_valid,
+        },
+        'sell_constraint': {
+            'ch8': ch8_sum,
+            'ch10': ch10_sum,
+            'ch12': ch12_sum,
+            'diff': sell_diff,
+            'valid': sell_valid,
+        },
+        'errors': errors,
+    }
 
 
 def compute_channel_metrics(channel: np.ndarray) -> Dict:
@@ -133,7 +228,13 @@ def generate_stock_diagnostics(
         trade_date: 交易日期
     
     Returns:
-        诊断信息字典
+        诊断信息字典，包含:
+        - stock_code: 股票代码
+        - trade_date: 交易日期
+        - channels: 各通道指标
+        - summary: 股票级汇总指标
+        - v3_constraints: v3架构通道约束信息
+        - timestamp: 时间戳
     """
     # 验证输入
     if image.shape != (15, 8, 8):
@@ -149,21 +250,38 @@ def generate_stock_diagnostics(
     # 计算股票级指标
     summary = compute_stock_metrics(image)
     
+    # v3新增：计算通道约束信息
+    constraint_result = validate_channel_constraints(image)
+    buy_c = constraint_result['buy_constraint']
+    sell_c = constraint_result['sell_constraint']
+    
+    v3_constraints = {
+        'buy_decomposition': f"Ch7({buy_c['ch7']:.4f}) = Ch9({buy_c['ch9']:.4f}) + Ch11({buy_c['ch11']:.4f})",
+        'sell_decomposition': f"Ch8({sell_c['ch8']:.4f}) = Ch10({sell_c['ch10']:.4f}) + Ch12({sell_c['ch12']:.4f})",
+        'valid': constraint_result['valid'],
+        'buy_valid': buy_c['valid'],
+        'sell_valid': sell_c['valid'],
+        'buy_diff': buy_c['diff'],
+        'sell_diff': sell_c['diff'],
+    }
+    
     return {
         'stock_code': stock_code,
         'trade_date': trade_date,
         'channels': channels,
         'summary': summary,
+        'v3_constraints': v3_constraints,
         'timestamp': datetime.now().isoformat(),
     }
 
 
-def check_health(diagnostics: Dict) -> List[str]:
+def check_health(diagnostics: Dict, image: np.ndarray = None) -> List[str]:
     """
     健康检查，返回警告列表
     
     Args:
         diagnostics: 诊断信息字典
+        image: [15, 8, 8] 图像数据（可选），用于v3约束检查
     
     Returns:
         警告消息列表
@@ -227,6 +345,13 @@ def check_health(diagnostics: Dict) -> List[str]:
         warnings.append(f"[{stock_code}] 成交/委托比过低: {trade_order_ratio:.2f}")
     if trade_order_ratio > HEALTH_THRESHOLDS['trade_order_ratio_max']:
         warnings.append(f"[{stock_code}] 成交/委托比过高: {trade_order_ratio:.2f}")
+    
+    # v3新增: 通道约束检查
+    if image is not None:
+        constraint_result = validate_channel_constraints(image)
+        if not constraint_result['valid']:
+            for error in constraint_result['errors']:
+                warnings.append(f"[{stock_code}] 通道约束违反: {error}")
     
     return warnings
 

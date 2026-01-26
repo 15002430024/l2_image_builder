@@ -3,13 +3,19 @@
 
 加载深交所逐笔委托、逐笔成交数据
 
+v3 架构更新（2026-01-26）：
+- OrderQty 字段统一重命名为 Qty，确保沪深 Loader 输出列名统一
+- 新增 build_active_seqs_from_trade 向量化实现
+- 支持 ActiveSeqs 快速构建用于通道 9-12 分流
+
 增强功能（Prompt 1.2）：
 - 使用 pl.scan_parquet() 进行懒加载，只读取需要的列
 - 支持批量加载多只股票数据
 - 优化内存使用，延迟执行查询
 """
 
-from typing import Optional, Tuple, List, Iterator, Union
+import logging
+from typing import Optional, Tuple, List, Iterator, Union, Set, Dict
 from pathlib import Path
 
 from .polars_utils import (
@@ -32,10 +38,33 @@ if POLARS_AVAILABLE:
 import pandas as pd
 
 
+logger = logging.getLogger(__name__)
+
+
 # 默认连续竞价时段
 DEFAULT_TIME_RANGES = [
     (93000000, 113000000),   # 上午 9:30:00.000 - 11:30:00.000
     (130000000, 145700000),  # 下午 13:00:00.000 - 14:57:00.000
+]
+
+
+# ==================== v3 列常量定义 ====================
+
+# 深交所委托表原始列名
+ORDER_COLUMNS_RAW = [
+    "SecurityID", "ApplSeqNum", "TransactTime", 
+    "Price", "OrderQty", "Side", "OrdType"
+]
+
+# 深交所委托表归一化列名（OrderQty -> Qty，与上交所统一）
+ORDER_COLUMNS_NORMALIZED = [
+    "SecurityID", "ApplSeqNum", "TransactTime", 
+    "Price", "Qty", "Side", "OrdType"  # OrderQty -> Qty
+]
+
+# v3: 成交表必需列（用于构建 ActiveSeqs）
+TRADE_COLUMNS_FOR_ACTIVE_SEQS = [
+    "SecurityID", "BidApplSeqNum", "OfferApplSeqNum", "ExecType"
 ]
 
 
@@ -47,6 +76,11 @@ class SZDataLoader:
     - 委托表: sz_order_data，Side 用 ASCII 码表示（49=买, 50=卖）
     - 成交表: sz_trade_data，ExecType 区分成交(70)和撤单(52)
     
+    v3 架构更新（2026-01-26）：
+    - OrderQty 自动重命名为 Qty，与上交所统一
+    - 新增 build_active_seqs_from_trade 向量化实现
+    - 支持快速构建 ActiveSeqs 用于通道 9-12 分流
+    
     增强功能：
     - 懒加载模式：使用 scan_parquet 延迟加载
     - 列选择：只读取需要的列
@@ -54,20 +88,26 @@ class SZDataLoader:
     - 时间过滤下推：在数据读取时就进行过滤
     """
     
-    # 委托表字段
+    # 委托表字段（v3: OrderQty 将被重命名为 Qty）
     ORDER_COLUMNS = {
         "SecurityID": "str",       # 证券代码
         "ApplSeqNum": "int",       # 委托序列号
         "TransactTime": "int",     # 委托时间
         "Price": "float",          # 委托价格
-        "OrderQty": "int",         # 委托数量
+        "OrderQty": "int",         # 委托数量（原始列名，加载后重命名为 Qty）
+        "Qty": "int",              # ⭐ v3: 统一列名（加载后自动重命名）
         "Side": "str",             # 49=买, 50=卖, 71=借入, 70=出借
         "OrdType": "str",          # 49=市价, 50=限价
     }
     
-    # 构建 Image 所需的最小委托列
-    ORDER_COLUMNS_MINIMAL = [
+    # 构建 Image 所需的最小委托列（原始列名）
+    ORDER_COLUMNS_MINIMAL_RAW = [
         "SecurityID", "ApplSeqNum", "TransactTime", "Price", "OrderQty", "Side"
+    ]
+    
+    # 构建 Image 所需的最小委托列（v3 归一化后）
+    ORDER_COLUMNS_MINIMAL = [
+        "SecurityID", "ApplSeqNum", "TransactTime", "Price", "Qty", "Side"
     ]
     
     # 成交表字段
@@ -175,9 +215,12 @@ class SZDataLoader:
         time_filter: Optional[bool] = None,
         time_ranges: Optional[List[Tuple[int, int]]] = None,
         minimal_columns: bool = False,
+        normalize_columns: bool = True,
     ) -> DataFrame:
         """
         加载深交所委托数据
+        
+        v3 更新：自动将 OrderQty 重命名为 Qty，与上交所统一。
         
         Args:
             date: 日期字符串
@@ -185,6 +228,7 @@ class SZDataLoader:
             time_filter: 是否进行时间过滤，None 使用默认设置
             time_ranges: 时间范围
             minimal_columns: 是否只加载构建 Image 所需的最小列
+            normalize_columns: 是否归一化列名（OrderQty -> Qty），默认 True
         
         Returns:
             委托数据 DataFrame
@@ -194,15 +238,19 @@ class SZDataLoader:
         if not filepath.exists():
             raise FileNotFoundError(f"深交所委托数据不存在: {filepath}")
         
-        # 确定要加载的列
+        # 确定要加载的列（使用原始列名）
         if minimal_columns:
-            columns = self.ORDER_COLUMNS_MINIMAL
+            columns = self.ORDER_COLUMNS_MINIMAL_RAW
         
         df = read_parquet_auto(
             filepath,
             columns=columns,
             use_polars=self.use_polars,
         )
+        
+        # v3: 字段归一化 - 深交所 OrderQty -> 通用 Qty
+        if normalize_columns:
+            df = self._normalize_order_columns(df)
         
         # 确定是否进行时间过滤
         do_time_filter = time_filter if time_filter is not None else self.default_time_filter
@@ -212,8 +260,34 @@ class SZDataLoader:
             ranges = time_ranges if time_ranges is not None else DEFAULT_TIME_RANGES
             df = filter_time_range(df, "TransactTime", ranges)
         
-        # 过滤异常值
-        df = filter_positive(df, ["Price", "OrderQty"])
+        # 过滤异常值（使用归一化后的列名）
+        qty_col = "Qty" if normalize_columns and "Qty" in (df.columns if is_polars_df(df) else df.columns.tolist()) else "OrderQty"
+        df = filter_positive(df, ["Price", qty_col])
+        
+        return df
+    
+    def _normalize_order_columns(self, df: DataFrame) -> DataFrame:
+        """
+        归一化委托表列名
+        
+        v3 要求：OrderQty -> Qty，确保沪深 Loader 输出列名统一。
+        
+        Args:
+            df: 原始委托数据
+        
+        Returns:
+            列名归一化后的 DataFrame
+        """
+        if is_polars_df(df):
+            cols = df.columns
+            if 'OrderQty' in cols and 'Qty' not in cols:
+                df = df.rename({'OrderQty': 'Qty'})
+                logger.debug("深交所委托表: OrderQty -> Qty 列名归一化")
+        else:
+            cols = df.columns.tolist()
+            if 'OrderQty' in cols and 'Qty' not in cols:
+                df = df.rename(columns={'OrderQty': 'Qty'})
+                logger.debug("深交所委托表: OrderQty -> Qty 列名归一化")
         
         return df
     
@@ -309,9 +383,12 @@ class SZDataLoader:
         stock_codes: Optional[List[str]] = None,
         time_ranges: Optional[List[Tuple[int, int]]] = None,
         minimal_columns: bool = False,
+        normalize_columns: bool = True,
     ) -> "pl.LazyFrame":
         """
         懒加载委托数据（仅 Polars）
+        
+        v3 更新：支持列名归一化（OrderQty -> Qty）。
         
         Args:
             date: 日期字符串
@@ -319,6 +396,7 @@ class SZDataLoader:
             stock_codes: 要过滤的股票代码列表
             time_ranges: 时间范围，None 使用默认连续竞价时段
             minimal_columns: 是否只加载最小列
+            normalize_columns: 是否归一化列名，默认 True
         
         Returns:
             pl.LazyFrame 懒加载帧
@@ -331,9 +409,9 @@ class SZDataLoader:
         if not filepath.exists():
             raise FileNotFoundError(f"深交所委托数据不存在: {filepath}")
         
-        # 确定要加载的列
+        # 确定要加载的列（使用原始列名）
         if minimal_columns:
-            columns = self.ORDER_COLUMNS_MINIMAL
+            columns = self.ORDER_COLUMNS_MINIMAL_RAW
         
         # 确定时间范围
         ranges = time_ranges if time_ranges is not None else DEFAULT_TIME_RANGES
@@ -348,8 +426,17 @@ class SZDataLoader:
             time_column="TransactTime",
         )
         
-        # 添加正值过滤
-        lf = lf.filter((pl.col("Price") > 0) & (pl.col("OrderQty") > 0))
+        # v3: 列名归一化
+        if normalize_columns:
+            if 'OrderQty' in lf.columns:
+                lf = lf.rename({'OrderQty': 'Qty'})
+        
+        # 添加正值过滤（使用归一化后的列名）
+        qty_col = "Qty" if normalize_columns and 'OrderQty' in (columns or self.ORDER_COLUMNS_MINIMAL_RAW) else "OrderQty"
+        if qty_col == "Qty":
+            lf = lf.filter((pl.col("Price") > 0) & (pl.col("Qty") > 0))
+        else:
+            lf = lf.filter((pl.col("Price") > 0) & (pl.col("OrderQty") > 0))
         
         return lf
     
@@ -774,13 +861,13 @@ class SZDataLoader:
         # 合并回去
         return pd.concat([trades, cancels], ignore_index=True)
     
-    def build_active_seqs(self, trade_df: DataFrame) -> dict:
+    def build_active_seqs(self, trade_df: DataFrame) -> Dict[str, Set[int]]:
         """
         从成交表构建主动方序列号集合
         
-        用于判断委托是否作为主动方成交过。
-        深交所通过比较 BidApplSeqNum 和 OfferApplSeqNum 确定主动方：
-        序号大的一方为主动方。
+        v3 架构中用于判断委托的主动性：
+        - 买方主动：BidApplSeqNum > OfferApplSeqNum
+        - 卖方主动：OfferApplSeqNum > BidApplSeqNum
         
         Args:
             trade_df: 成交数据（ExecType='70'）
@@ -788,42 +875,21 @@ class SZDataLoader:
         Returns:
             {'buy': set(), 'sell': set()} 主动方序列号集合
         """
-        # 确保只处理成交记录
-        trades = self.get_trades_only(trade_df)
-        
-        active_seqs = {'buy': set(), 'sell': set()}
-        
-        if is_polars_df(trades):
-            for row in trades.iter_rows(named=True):
-                bid_seq = row['BidApplSeqNum']
-                offer_seq = row['OfferApplSeqNum']
-                
-                if bid_seq > offer_seq:
-                    # 买方主动
-                    active_seqs['buy'].add(bid_seq)
-                elif offer_seq > bid_seq:
-                    # 卖方主动
-                    active_seqs['sell'].add(offer_seq)
-        else:
-            for _, row in trades.iterrows():
-                bid_seq = row['BidApplSeqNum']
-                offer_seq = row['OfferApplSeqNum']
-                
-                if bid_seq > offer_seq:
-                    active_seqs['buy'].add(bid_seq)
-                elif offer_seq > bid_seq:
-                    active_seqs['sell'].add(offer_seq)
-        
-        return active_seqs
+        # 使用向量化实现（更高效）
+        return self.build_active_seqs_fast(trade_df)
     
-    def build_active_seqs_fast(self, trade_df: DataFrame) -> dict:
+    def build_active_seqs_fast(self, trade_df: DataFrame) -> Dict[str, Set[int]]:
         """
         快速构建主动方序列号集合（向量化实现）
         
-        相比 build_active_seqs 更高效，适用于大数据量。
+        v3 架构核心方法，用于深交所通道 9-12 的分流：
+        - Ch9: 主动买单（ApplSeqNum in active_seqs['buy']）
+        - Ch10: 主动卖单（ApplSeqNum in active_seqs['sell']）
+        - Ch11: 被动买单（ApplSeqNum not in active_seqs['buy']）
+        - Ch12: 被动卖单（ApplSeqNum not in active_seqs['sell']）
         
         Args:
-            trade_df: 成交数据（ExecType='70'）
+            trade_df: 成交数据（建议只传入 ExecType='70' 的记录）
         
         Returns:
             {'buy': set(), 'sell': set()} 主动方序列号集合
@@ -834,15 +900,15 @@ class SZDataLoader:
             # Polars 向量化实现
             buy_active = trades.filter(
                 pl.col("BidApplSeqNum") > pl.col("OfferApplSeqNum")
-            )["BidApplSeqNum"].to_list()
+            ).select("BidApplSeqNum")
             
             sell_active = trades.filter(
                 pl.col("OfferApplSeqNum") > pl.col("BidApplSeqNum")
-            )["OfferApplSeqNum"].to_list()
+            ).select("OfferApplSeqNum")
             
             return {
-                'buy': set(buy_active),
-                'sell': set(sell_active)
+                'buy': set(buy_active["BidApplSeqNum"].to_list()),
+                'sell': set(sell_active["OfferApplSeqNum"].to_list())
             }
         else:
             # Pandas 向量化实现

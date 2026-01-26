@@ -1,30 +1,37 @@
 """
 深交所图像构建器
 
-Prompt 3.2 实现：
-- 主动方向判定：BidApplSeqNum > OfferApplSeqNum → 主动买入
-- 通道9/10从成交表填充（"指鹿为马"，与上交所对齐）
-- 通道11/12需要判断"纯挂单"（委托未作为主动方成交）
-- 撤单在成交表中，ExecType='52'
+版本: v3 (意图导向架构)
+更新日期: 2026-01-26
+核心变更: 通道9/10从成交表迁移到委托表，使用 ActiveSeqs 互斥分流
 
-15通道定义（深交所）：
-| 索引 | 名称 | 数据源 | 说明 |
-|------|------|--------|------|
-| 0 | 全部成交 | 成交表 | ExecType='70' |
-| 1 | 主动买入 | 成交表 | BidSeq > OfferSeq |
-| 2 | 主动卖出 | 成交表 | OfferSeq > BidSeq |
-| 3 | 大买单 | 成交表 | 买方母单≥阈值 |
-| 4 | 大卖单 | 成交表 | 卖方母单≥阈值 |
-| 5 | 小买单 | 成交表 | 买方母单<阈值 |
-| 6 | 小卖单 | 成交表 | 卖方母单<阈值 |
-| 7 | 买单 | 委托表 | Side='49' |
-| 8 | 卖单 | 委托表 | Side='50' |
-| 9 | 主动买入(委托) | 成交表 | BidSeq > OfferSeq |
-| 10 | 主动卖出(委托) | 成交表 | OfferSeq > BidSeq |
-| 11 | 非主动买入 | 委托表 | Side='49' & 未作为主动方 |
-| 12 | 非主动卖出 | 委托表 | Side='50' & 未作为主动方 |
-| 13 | 撤买 | 成交表 | ExecType='52' & BidSeq>0 |
-| 14 | 撤卖 | 成交表 | ExecType='52' & OfferSeq>0 |
+v3 关键技术约束（铁律）：
+- 排序键必须使用 ['TransactTime', 'ApplSeqNum']
+- 通道9/10 必须来自委托表（Intent），不再从成交表填充
+- 通道7/8/11/12 必须遵循互斥分解规则：Ch7=Ch9+Ch11, Ch8=Ch10+Ch12
+
+15通道定义（深交所 v3）：
+| 索引 | 名称 | 数据源 | 筛选条件 | 物理含义 |
+|------|------|--------|----------|----------|
+| 0 | 全部成交 | 成交表 | ExecType='70' | 成交事件数 |
+| 1 | 主动买成交 | 成交表 | BidSeq > OfferSeq | 外盘成交 |
+| 2 | 主动卖成交 | 成交表 | OfferSeq > BidSeq | 内盘成交 |
+| 3 | 大买单成交 | 成交表 | 买方母单≥阈值 | 大资金买入 |
+| 4 | 大卖单成交 | 成交表 | 卖方母单≥阈值 | 大资金卖出 |
+| 5 | 小买单成交 | 成交表 | 买方母单<阈值 | 散户买入 |
+| 6 | 小卖单成交 | 成交表 | 卖方母单<阈值 | 散户卖出 |
+| 7 | 全部买单 | 委托表 | Side='49' | 买入意愿总量 |
+| 8 | 全部卖单 | 委托表 | Side='50' | 卖出意愿总量 |
+| 9 | 主动买委托 | 委托表 | ApplSeqNum in ActiveBuySeqs | ⭐ 进攻型买入意图 |
+| 10 | 主动卖委托 | 委托表 | ApplSeqNum in ActiveSellSeqs | ⭐ 进攻型卖出意图 |
+| 11 | 非主动买 | 委托表 | ApplSeqNum not in ActiveBuySeqs | 防守型买入 |
+| 12 | 非主动卖 | 委托表 | ApplSeqNum not in ActiveSellSeqs | 防守型卖出 |
+| 13 | 撤买 | 成交表 | ExecType='52' & BidSeq>0 | 买单撤回 |
+| 14 | 撤卖 | 成交表 | ExecType='52' & OfferSeq>0 | 卖单撤回 |
+
+v3 互斥分解规则：
+- Ch7（全部买单）= Ch9（主动买委托）+ Ch11（非主动买）
+- Ch8（全部卖单）= Ch10（主动卖委托）+ Ch12（非主动卖）
 """
 
 import numpy as np
@@ -201,7 +208,8 @@ class SZImageBuilder:
         """
         处理成交记录（逐行版本）
         
-        填充通道: 0, 1-2, 3-6, 9-10
+        v3: 成交表只填充通道 0-6，通道9/10已迁移到委托表
+        填充通道: 0, 1-2, 3-6
         """
         if is_polars_df(df):
             df_exec = df.filter(pl.col('ExecType') == '70')
@@ -226,13 +234,11 @@ class SZImageBuilder:
             # 通道0: 全部成交
             self.image[Channels.ALL_TRADE, pb, qb] += 1
             
-            # 通道1-2, 9-10: 主动方向
+            # 通道1-2: 主动方向（v3: 通道9/10不再从成交表填充）
             if bid_seq > offer_seq:
                 self.image[Channels.ACTIVE_BUY_TRADE, pb, qb] += 1
-                self.image[Channels.ACTIVE_BUY_ORDER, pb, qb] += 1
             elif offer_seq > bid_seq:
                 self.image[Channels.ACTIVE_SELL_TRADE, pb, qb] += 1
-                self.image[Channels.ACTIVE_SELL_ORDER, pb, qb] += 1
             
             # 通道3-6: 大小单
             buy_amount = self.buy_parent.get(int(bid_seq), 0)
@@ -290,7 +296,12 @@ class SZImageBuilder:
         """
         处理委托记录（逐行版本）
         
-        填充通道: 7-8, 11-12
+        v3: 使用 ActiveSeqs 互斥分流
+        填充通道: 7-8, 9-12
+        
+        互斥规则:
+        - Ch7 = Ch9 + Ch11
+        - Ch8 = Ch10 + Ch12
         """
         if is_polars_df(df):
             iterator = df.iter_rows(named=True)
@@ -299,7 +310,8 @@ class SZImageBuilder:
         
         for row in iterator:
             price = row['Price']
-            qty = row['OrderQty']
+            # v3: 支持归一化后的 Qty 字段（Loader层已将 OrderQty 重命名为 Qty）
+            qty = row.get('Qty', row.get('OrderQty'))
             
             if price <= 0:
                 continue
@@ -311,15 +323,25 @@ class SZImageBuilder:
             side = row['Side']
             
             if side == '49':  # 买入
+                # Ch7: 全部买单
                 self.image[Channels.BUY_ORDER, pb, qb] += 1
-                # 非主动买入：未作为主动方成交
-                if appl_seq not in active_seqs['buy']:
+                # v3 互斥分流: Ch9 或 Ch11
+                if appl_seq in active_seqs['buy']:
+                    # Ch9: 主动买委托（进攻型）
+                    self.image[Channels.ACTIVE_BUY_ORDER, pb, qb] += 1
+                else:
+                    # Ch11: 非主动买（防守型）
                     self.image[Channels.PASSIVE_BUY, pb, qb] += 1
             
             elif side == '50':  # 卖出
+                # Ch8: 全部卖单
                 self.image[Channels.SELL_ORDER, pb, qb] += 1
-                # 非主动卖出
-                if appl_seq not in active_seqs['sell']:
+                # v3 互斥分流: Ch10 或 Ch12
+                if appl_seq in active_seqs['sell']:
+                    # Ch10: 主动卖委托（进攻型）
+                    self.image[Channels.ACTIVE_SELL_ORDER, pb, qb] += 1
+                else:
+                    # Ch12: 非主动卖（防守型）
                     self.image[Channels.PASSIVE_SELL, pb, qb] += 1
     
     # ==================== 向量化处理方法 ====================
@@ -330,7 +352,8 @@ class SZImageBuilder:
         """
         向量化处理成交记录
         
-        填充通道: 0, 1-2, 3-6, 9-10
+        v3: 成交表只填充通道 0-6，通道9/10已迁移到委托表
+        填充通道: 0, 1-2, 3-6
         """
         if is_polars_df(df):
             df_exec = df.filter(pl.col('ExecType') == '70')
@@ -365,7 +388,7 @@ class SZImageBuilder:
         # 通道0: 全部成交
         np.add.at(self.image[Channels.ALL_TRADE], (price_bins, qty_bins), 1)
         
-        # 通道1-2, 9-10: 主动方向
+        # 通道1-2: 主动方向（v3: 通道9/10不再从成交表填充）
         buy_mask = bid_seqs > offer_seqs
         sell_mask = offer_seqs > bid_seqs
         
@@ -374,18 +397,10 @@ class SZImageBuilder:
                 self.image[Channels.ACTIVE_BUY_TRADE],
                 (price_bins[buy_mask], qty_bins[buy_mask]), 1
             )
-            np.add.at(
-                self.image[Channels.ACTIVE_BUY_ORDER],
-                (price_bins[buy_mask], qty_bins[buy_mask]), 1
-            )
         
         if sell_mask.any():
             np.add.at(
                 self.image[Channels.ACTIVE_SELL_TRADE],
-                (price_bins[sell_mask], qty_bins[sell_mask]), 1
-            )
-            np.add.at(
-                self.image[Channels.ACTIVE_SELL_ORDER],
                 (price_bins[sell_mask], qty_bins[sell_mask]), 1
             )
         
@@ -491,16 +506,29 @@ class SZImageBuilder:
         """
         向量化处理委托记录
         
-        填充通道: 7-8, 11-12
+        v3: 使用 ActiveSeqs 互斥分流
+        填充通道: 7-8, 9-12
+        
+        互斥规则:
+        - Ch7 = Ch9 + Ch11
+        - Ch8 = Ch10 + Ch12
         """
         if is_polars_df(df):
             prices = df['Price'].to_numpy()
-            qtys = df['OrderQty'].to_numpy()
+            # v3: 支持归一化后的 Qty 字段
+            if 'Qty' in df.columns:
+                qtys = df['Qty'].to_numpy()
+            else:
+                qtys = df['OrderQty'].to_numpy()
             appl_seqs = df['ApplSeqNum'].to_numpy()
             sides = df['Side'].to_numpy()
         else:
             prices = df['Price'].values
-            qtys = df['OrderQty'].values
+            # v3: 支持归一化后的 Qty 字段
+            if 'Qty' in df.columns:
+                qtys = df['Qty'].values
+            else:
+                qtys = df['OrderQty'].values
             appl_seqs = df['ApplSeqNum'].values
             sides = df['Side'].values
         
@@ -524,16 +552,28 @@ class SZImageBuilder:
         # 买入委托 (Side='49')
         buy_mask = sides == '49'
         if buy_mask.any():
+            # Ch7: 全部买单
             np.add.at(
                 self.image[Channels.BUY_ORDER],
                 (price_bins[buy_mask], qty_bins[buy_mask]), 1
             )
             
-            # 非主动买入：未作为主动方成交
+            # v3 互斥分流: 判断是否在 active_seqs 中
             buy_seqs = appl_seqs[buy_mask].astype(int)
-            passive_buy_mask = np.array([
-                seq not in active_seqs['buy'] for seq in buy_seqs
+            active_buy_mask = np.array([
+                seq in active_seqs['buy'] for seq in buy_seqs
             ])
+            passive_buy_mask = ~active_buy_mask
+            
+            # Ch9: 主动买委托（进攻型）
+            if active_buy_mask.any():
+                np.add.at(
+                    self.image[Channels.ACTIVE_BUY_ORDER],
+                    (price_bins[buy_mask][active_buy_mask],
+                     qty_bins[buy_mask][active_buy_mask]), 1
+                )
+            
+            # Ch11: 非主动买（防守型）
             if passive_buy_mask.any():
                 np.add.at(
                     self.image[Channels.PASSIVE_BUY],
@@ -544,16 +584,28 @@ class SZImageBuilder:
         # 卖出委托 (Side='50')
         sell_mask = sides == '50'
         if sell_mask.any():
+            # Ch8: 全部卖单
             np.add.at(
                 self.image[Channels.SELL_ORDER],
                 (price_bins[sell_mask], qty_bins[sell_mask]), 1
             )
             
-            # 非主动卖出
+            # v3 互斥分流
             sell_seqs = appl_seqs[sell_mask].astype(int)
-            passive_sell_mask = np.array([
-                seq not in active_seqs['sell'] for seq in sell_seqs
+            active_sell_mask = np.array([
+                seq in active_seqs['sell'] for seq in sell_seqs
             ])
+            passive_sell_mask = ~active_sell_mask
+            
+            # Ch10: 主动卖委托（进攻型）
+            if active_sell_mask.any():
+                np.add.at(
+                    self.image[Channels.ACTIVE_SELL_ORDER],
+                    (price_bins[sell_mask][active_sell_mask],
+                     qty_bins[sell_mask][active_sell_mask]), 1
+                )
+            
+            # Ch12: 非主动卖（防守型）
             if passive_sell_mask.any():
                 np.add.at(
                     self.image[Channels.PASSIVE_SELL],
@@ -588,14 +640,63 @@ class SZImageBuilder:
             }
         return stats
     
+    def validate_constraints(self) -> Dict[str, any]:
+        """
+        验证 v3 通道约束
+        
+        v3 互斥分解规则:
+        - Ch7（全部买单）= Ch9（主动买委托）+ Ch11（非主动买）
+        - Ch8（全部卖单）= Ch10（主动卖委托）+ Ch12（非主动卖）
+        
+        Returns:
+            {
+                'buy_valid': bool,      # Ch7 = Ch9 + Ch11
+                'sell_valid': bool,     # Ch8 = Ch10 + Ch12
+                'buy_diff': float,      # Ch7.sum() - (Ch9.sum() + Ch11.sum())
+                'sell_diff': float,     # Ch8.sum() - (Ch10.sum() + Ch12.sum())
+                'decomposition': {
+                    'ch7_total': float,
+                    'ch9_active_buy': float,
+                    'ch11_passive_buy': float,
+                    'ch8_total': float,
+                    'ch10_active_sell': float,
+                    'ch12_passive_sell': float,
+                }
+            }
+        """
+        ch7_sum = self.image[Channels.BUY_ORDER].sum()
+        ch8_sum = self.image[Channels.SELL_ORDER].sum()
+        ch9_sum = self.image[Channels.ACTIVE_BUY_ORDER].sum()
+        ch10_sum = self.image[Channels.ACTIVE_SELL_ORDER].sum()
+        ch11_sum = self.image[Channels.PASSIVE_BUY].sum()
+        ch12_sum = self.image[Channels.PASSIVE_SELL].sum()
+        
+        buy_diff = ch7_sum - (ch9_sum + ch11_sum)
+        sell_diff = ch8_sum - (ch10_sum + ch12_sum)
+        
+        return {
+            'buy_valid': abs(buy_diff) < 1e-6,
+            'sell_valid': abs(sell_diff) < 1e-6,
+            'buy_diff': float(buy_diff),
+            'sell_diff': float(sell_diff),
+            'decomposition': {
+                'ch7_total': float(ch7_sum),
+                'ch9_active_buy': float(ch9_sum),
+                'ch11_passive_buy': float(ch11_sum),
+                'ch8_total': float(ch8_sum),
+                'ch10_active_sell': float(ch10_sum),
+                'ch12_passive_sell': float(ch12_sum),
+            }
+        }
+    
     def validate_consistency(self) -> Dict[str, bool]:
         """
         验证图像一致性
         
-        检查项:
-        1. 通道1 + 通道2 ≤ 通道0 (主动买+主动卖 ≤ 全部成交)
-        2. 通道1 = 通道9, 通道2 = 通道10 (深交所都从成交表填充)
-        3. 通道7 ≥ 通道11, 通道8 ≥ 通道12 (全部委托 ≥ 纯挂单)
+        v3 检查项:
+        1. 通道1 + 通道2 ≤ 通道0 (主动买成交+主动卖成交 ≤ 全部成交)
+        2. Ch7 = Ch9 + Ch11 (v3 互斥分解)
+        3. Ch8 = Ch10 + Ch12 (v3 互斥分解)
         
         Returns:
             各检查项的结果
@@ -607,13 +708,10 @@ class SZImageBuilder:
         all_trade = self.image[0].sum()
         results['active_le_all'] = active_sum <= all_trade + 1e-6
         
-        # 检查2: 通道1 = 通道9, 通道2 = 通道10 (深交所)
-        results['ch1_eq_ch9'] = np.allclose(self.image[1], self.image[9])
-        results['ch2_eq_ch10'] = np.allclose(self.image[2], self.image[10])
-        
-        # 检查3: 全部委托 ≥ 纯挂单
-        results['ch7_ge_ch11'] = self.image[7].sum() >= self.image[11].sum() - 1e-6
-        results['ch8_ge_ch12'] = self.image[8].sum() >= self.image[12].sum() - 1e-6
+        # v3 检查: 互斥分解约束
+        constraints = self.validate_constraints()
+        results['ch7_eq_ch9_plus_ch11'] = constraints['buy_valid']
+        results['ch8_eq_ch10_plus_ch12'] = constraints['sell_valid']
         
         return results
 

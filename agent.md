@@ -6,7 +6,7 @@
 
 - **项目名称**: L2 Image Builder (Level2 数据图像化处理)
 - **创建日期**: 2026-01-21
-- **最后更新**: 2026-01-21 (Prompt 5.1)
+- **最后更新**: 2026-01-26 (Prompt R3.2 配置与常量更新完成)
 - **当前状态**: 开发中
 - **目标**: 将 Level2 逐笔成交与逐笔委托数据转换为 `[15, 8, 8]` 三维图像格式
 - **执行环境**: conda中的 torch1010
@@ -18,11 +18,11 @@
 
 | 模块 | 功能 | 状态 | 实现日期 | 说明 |
 |------|------|------|----------|------|
-| config.py | 配置管理 | ✅ 完成 | 2026-01-21 | 支持 YAML、环境变量、dataclass 默认值 |
-| config.py | Channels 常量类 | ✅ 完成 | 2026-01-21 | 15 通道索引常量定义 |
+| config.py | 配置管理 | ✅ **v3增强** | 2026-01-26 | **R3.2: v3架构标识，特性开关** |
+| config.py | Channels 常量类 | ✅ **v3增强** | 2026-01-26 | **R3.2: v3文档，validate_constraints()** |
 | polars_utils.py | Polars/Pandas 互操作 | ✅ 增强 | 2026-01-21 | Prompt 1.2: 懒加载、批量处理 |
-| sh_loader.py | 上交所数据加载 | ✅ 增强 | 2026-01-21 | Prompt 1.2: 懒加载、迭代器 |
-| sz_loader.py | 深交所数据加载 | ✅ 增强 | 2026-01-21 | Prompt 1.2: 懒加载、迭代器 |
+| sh_loader.py | 上交所数据加载 | ✅ **v3增强** | 2026-01-26 | **R3.1: v3字段验证，主动/被动筛选方法** |
+| sz_loader.py | 深交所数据加载 | ✅ **v3增强** | 2026-01-26 | **R3.1: 字段归一化(OrderQty→Qty)，向量化build_active_seqs** |
 | time_filter.py | 时间过滤 | ✅ 增强 | 2026-01-21 | Prompt 1.3: Polars 向量化 |
 | anomaly_filter.py | 异常值过滤 | ✅ 增强 | 2026-01-21 | Prompt 1.3: 撤单专用过滤 |
 | sz_cancel_enricher.py | 深交所撤单价格关联 | ✅ 增强 | 2026-01-21 | Prompt 2.3: 分离撤买/撤卖、缓存 |
@@ -35,7 +35,7 @@
 | quantile.py | 分位数计算 | ✅ 增强 | 2026-01-21 | Prompt 2.1: 沪深分离、向量化 |
 | quantile.py | 验证诊断 | ✅ 新增 | 2026-01-21 | Prompt 2.1: 分布验证、可视化 |
 | big_order.py | 母单还原 | ✅ 增强 | 2026-01-21 | Prompt 2.2: Polars 向量化、撤单过滤 |
-| big_order.py | 当日阈值计算 | ✅ 增强 | 2026-01-21 | Prompt 2.2: Mean+Std、验证诊断 |
+| big_order.py | 当日阈值计算 | ✅ **v3增强** | 2026-01-26 | **R3.2: 适用场景说明（离线/实盘）** |
 
 ### Phase 3: 图像构建层
 
@@ -43,8 +43,8 @@
 |------|------|------|----------|------|
 | image_builder.py | 15 通道图像构建 | ✅ 增强 | 2026-01-21 | Prompt 3.3: 统一入口 build_single_stock |
 | normalizer.py | Log1p + Max 归一化 | ✅ 完成 | 2026-01-21 | 通道内归一化、ImageNormalizer 类 |
-| sh_builder.py | 上交所图像构建器 | ✅ 新增 | 2026-01-21 | Prompt 3.1: 向量化实现 |
-| sz_builder.py | 深交所图像构建器 | ✅ 新增 | 2026-01-21 | Prompt 3.2: 向量化实现 |
+| sh_builder.py | 上交所图像构建器 | ✅ **v3重构** | 2026-01-26 | **R1.1: 意图导向重构，Ch9/10从委托表填充** |
+| sz_builder.py | 深交所图像构建器 | ✅ **v3重构** | 2026-01-26 | **R1.2: 意图导向重构，ActiveSeqs互斥分流** |
 
 ### Phase 4: 存储与输出层
 
@@ -71,6 +71,26 @@
 | scripts/batch_process.py | run_backfill | ✅ 新增 | 2026-01-21 | Prompt 5.1: 历史回填 |
 | scripts/batch_process.py | run_daily_update | ✅ 新增 | 2026-01-21 | Prompt 5.1: 每日更新 |
 | Dask 并行 | 批量处理 | ✅ 完成 | 2026-01-21 | 多进程加速 |
+
+### Phase 6: v3 重构（意图导向）
+
+| 模块 | 功能 | 状态 | 实现日期 | 说明 |
+|------|------|------|----------|------|
+| sh_builder.py | v3重构 | ✅ 完成 | 2026-01-26 | R1.1: Ch9/10从委托表填充，IsAggressive互斥分流 |
+| sh_builder.py | validate_constraints | ✅ 新增 | 2026-01-26 | 验证Ch7=Ch9+Ch11, Ch8=Ch10+Ch12 |
+| test_sh_builder.py | v3测试 | ✅ 新增 | 2026-01-26 | 7个v3专属测试用例 |
+| sz_builder.py | v3重构 | ✅ 完成 | 2026-01-26 | **R1.2: 深交所v3重构，ActiveSeqs互斥分流** |
+| sz_builder.py | validate_constraints | ✅ 新增 | 2026-01-26 | 验证Ch7=Ch9+Ch11, Ch8=Ch10+Ch12 |
+| test_sz_builder.py | v3测试 | ✅ 新增 | 2026-01-26 | 7个v3专属测试用例 |
+| reporter.py | v3增强 | ✅ 完成 | 2026-01-26 | **R2.1: validate_channel_constraints(), CHANNEL_NAMES更新** |
+| test_diagnostics.py | v3测试 | ✅ 新增 | 2026-01-26 | 15个v3约束验证测试用例 |
+| image_builder.py | v3适配 | ✅ 完成 | 2026-01-26 | **R2.2: v3字段验证，约束检查集成** |
+| test_integration_builder.py | v3修复 | ✅ 更新 | 2026-01-26 | R2.2: 测试fixtures添加v3字段 |
+| test_sh_builder.py | v3修复 | ✅ 更新 | 2026-01-26 | R2.2: 所有内联DataFrame添加IsAggressive |
+| sh_loader.py | v3字段 | ✅ **完成** | 2026-01-26 | **R3.1: v3字段验证，辅助方法** |
+| sz_loader.py | v3字段 | ✅ **完成** | 2026-01-26 | **R3.1: 字段归一化，向量化优化** |
+| config.py | v3配置 | ✅ **完成** | 2026-01-26 | **R3.2: Channels v3文档，Config v3特性开关** |
+| big_order.py | v3文档 | ✅ **完成** | 2026-01-26 | **R3.2: 阈值计算适用场景说明** |
 
 ---
 
@@ -169,12 +189,37 @@ def batch_load_stocks(filepath: str, stock_codes: List[str], batch_size: int = 5
 ```
 
 class SZDataLoader:
-    """深交所数据加载器"""
+    """深交所数据加载器（R3.1 v3增强）"""
     def __init__(self, raw_data_dir: str, use_polars: bool = True)
     def load_trade(self, date: str, ...) -> DataFrame
-    def load_order(self, date: str, ...) -> DataFrame
+    def load_order(self, date: str, normalize_columns: bool = True, ...) -> DataFrame  # R3.1: 字段归一化
+    def load_order_lazy(self, date: str, normalize_columns: bool = True, ...) -> LazyFrame  # R3.1: 懒加载归一化
     def enrich_cancel_price(self, trade_df, order_df) -> DataFrame
-    def build_active_seqs(self, trade_df) -> Dict[str, Set[int]]
+    def build_active_seqs(self, trade_df) -> Dict[str, Set[int]]  # R3.1: 向量化优化
+    def build_active_seqs_fast(self, trade_df) -> Dict[str, Set[int]]  # R3.1: build_active_seqs内部调用
+    
+    # R3.1 新增: 字段归一化
+    def _normalize_order_columns(self, df) -> DataFrame  # OrderQty -> Qty
+```
+
+```python
+class SHDataLoader:
+    """上交所数据加载器（R3.1 v3增强）"""
+    
+    # R3.1 新增: v3必需字段常量
+    V3_REQUIRED_ORDER_FIELDS = ['BizIndex', 'OrdType', 'Side', 'Price', 'Qty', 'IsAggressive']
+    V3_REQUIRED_TRADE_FIELDS = ['BizIndex', 'BuyOrderNO', 'SellOrderNO', 'Price', 'Qty', 'ActiveSide']
+    
+    def load_order(self, date: str, validate_v3_fields: bool = True, ...) -> DataFrame
+    def _validate_order_v3_fields(self, df, date: str) -> None  # 抛出ValueError若缺少字段
+    
+    # R3.1 新增: 主动/被动委托筛选方法
+    def get_aggressive_orders(self, df: DataFrame) -> DataFrame  # IsAggressive == True
+    def get_passive_orders(self, df: DataFrame) -> DataFrame     # IsAggressive == False
+    def get_aggressive_buy_orders(self, df: DataFrame) -> DataFrame   # IsAggressive==True & Side=='1'
+    def get_aggressive_sell_orders(self, df: DataFrame) -> DataFrame  # IsAggressive==True & Side=='2'
+    def get_passive_buy_orders(self, df: DataFrame) -> DataFrame      # IsAggressive==False & Side=='1'
+    def get_passive_sell_orders(self, df: DataFrame) -> DataFrame     # IsAggressive==False & Side=='2'
 ```
 
 ### 计算模块 (calculator/)
@@ -959,6 +1004,249 @@ print(f"阈值: {threshold:.2f}, 有效: {result['valid']}, 大单占比: {resul
 - 迭代器方法适用于需要逐个处理股票的场景
 - 批量加载适用于并行处理场景
 
+### [2026-01-26] - Prompt R1.1 上交所图像构建器v3重构
+
+**目标:**
+从"结果导向"升级到"意图导向"，通道9/10改为从委托表填充，实现Ch7=Ch9+Ch11约束。
+
+**v3 核心变更:**
+| 维度 | v2（旧） | v3（新） |
+|------|---------|---------|
+| 通道9/10数据源 | 成交表 | 委托表 |
+| 通道9/10含义 | 已成交的主动量 | 完整的进攻意图（母单量） |
+| Ch7与Ch11关系 | Ch7=Ch11（重叠） | Ch7=Ch9+Ch11（互斥分解） |
+
+**修改 `builder/sh_builder.py`:**
+- `_fill_trade()`: 🔴 **物理删除** Ch9/Ch10 填充代码
+- `_process_orders()`: 新增 `_validate_order_fields()` 验证 IsAggressive 字段
+- `_process_orders_polars()` / `_process_orders_pandas()`: 提取 IsAggressive 字段
+- `_fill_order()`: 新增 `is_aggressive` 参数，实现 Ch9/10/11/12 互斥分流
+- `_process_trades_vectorized()`: 🔴 **移除** Ch9/Ch10 向量化填充
+- `_process_orders_vectorized()`: 实现 v3 互斥分流向量化逻辑
+- `validate_constraints()`: **新增** 方法，验证 Ch7=Ch9+Ch11, Ch8=Ch10+Ch12
+- `validate_consistency()`: 更新为调用 v3 约束验证
+
+**修改 `tests/test_sh_builder.py`:**
+- 更新 fixtures: `sample_order_pandas` / `sample_order_polars` 添加 `IsAggressive` 字段
+- **新增** `TestV3ChannelConstraints` 测试类（7个测试用例）:
+  - `test_channel_9_10_not_from_trade`: 验证Ch9/10不从成交表填充
+  - `test_channel_constraints_ch7_eq_ch9_plus_ch11`: 验证数学约束
+  - `test_validate_constraints_method`: 验证 validate_constraints 方法
+  - `test_aggressive_order_to_ch9`: 验证进攻型买单进入Ch9
+  - `test_passive_order_to_ch11`: 验证防守型买单进入Ch11
+  - `test_missing_is_aggressive_field`: 验证缺少字段时抛出明确错误
+  - `test_ch7_not_equal_ch11_with_mixed_orders`: 验证Ch7和Ch11不再重叠
+- **新增** `TestV3ChannelConstraintsPolars` 测试类（Polars版）
+
+**关键技术约束（铁律）:**
+| 约束项 | 要求 | 原因 |
+|--------|------|------|
+| 排序键 | 必须使用 `['TickTime', 'BizIndex']` | 同一毫秒内可能有多条记录 |
+| 必需字段 | 委托表必须包含 `IsAggressive` | 互斥分流必需 |
+| 阈值计算 | 当日 Mean + Std | 离线训练场景 |
+| IsAggressive判定 | 只看首次出现的记录类型 | 入场瞬间语义 |
+
+**测试结果:** 7个v3测试全部通过 ✅
+
+### [2026-01-26] - Prompt R1.2 深交所图像构建器v3重构
+
+**目标:**
+深交所构建器从"结果导向"升级到"意图导向"，使用 ActiveSeqs 集合进行互斥分流。
+
+**v3 核心变更:**
+| 维度 | v2（旧） | v3（新） |
+|------|---------|---------|
+| 通道9/10数据源 | 成交表 (BidSeq vs OfferSeq) | 委托表 (ActiveSeqs 集合) |
+| 通道9/10含义 | 已成交的主动量 | 完整的进攻意图（母单量） |
+| Ch7与Ch11关系 | Ch7≥Ch11（不互斥） | Ch7=Ch9+Ch11（互斥分解） |
+
+**修改 `builder/sz_builder.py`:**
+- **文件头部文档**: 更新为 v3 通道定义，添加互斥分解规则说明
+- `_process_trades()`: 🔴 **移除** Ch9/Ch10 填充代码（`ACTIVE_BUY_ORDER`/`ACTIVE_SELL_ORDER`）
+- `_process_orders()`: 新增 Ch9/Ch10 填充逻辑，使用 active_seqs 互斥分流
+  - `appl_seq in active_seqs['buy']` → Ch9（主动买委托）
+  - `appl_seq not in active_seqs['buy']` → Ch11（非主动买）
+- `_process_trades_vectorized()`: 🔴 **移除** Ch9/Ch10 向量化填充
+- `_process_orders_vectorized()`: 实现 v3 互斥分流向量化逻辑
+  - 新增 active_buy_mask / passive_buy_mask 计算
+  - 支持归一化后的 `Qty` 字段（兼容 `OrderQty`）
+- `validate_constraints()`: **新增** 方法，返回:
+  - `buy_valid`: Ch7 = Ch9 + Ch11
+  - `sell_valid`: Ch8 = Ch10 + Ch12
+  - `decomposition`: 各通道统计详情
+- `validate_consistency()`: 更新为 v3 约束检查
+
+**修改 `tests/test_sz_builder.py`:**
+- 🔴 **删除** `test_channel_9_10_same_as_1_2` 测试（v2逻辑）
+- **更新** `test_channel_11_12_passive_orders`: 添加 v3 约束验证
+- **更新** `test_validate_consistency`: 使用 v3 检查项
+- **新增** `TestV3ChannelConstraints` 测试类（6个测试用例）:
+  - `test_channel_constraint_buy_decomposition`: 验证Ch7=Ch9+Ch11
+  - `test_channel_constraint_sell_decomposition`: 验证Ch8=Ch10+Ch12
+  - `test_validate_consistency_v3`: 验证 validate_consistency 返回v3结果
+  - `test_trades_do_not_fill_ch9_ch10`: 验证成交表不再填充Ch9/Ch10
+  - `test_passive_order_stays_passive`: 验证被动单后续成交仍归入Ch11/Ch12
+  - `test_build_vs_vectorized_constraints`: 验证逐行/向量化版本都满足约束
+- **新增** `TestV3ChannelConstraintsPolars` 测试类
+
+**关键技术约束（铁律）:**
+| 约束项 | 要求 | 原因 |
+|--------|------|------|
+| 排序键 | 必须使用 `['TransactTime', 'ApplSeqNum']` | 同一毫秒内可能有多条记录 |
+| ActiveSeqs判定 | `BidApplSeqNum > OfferApplSeqNum` → 主动买 | ApplSeqNum 是全局唯一序号 |
+| 字段归一化 | 深交所 `OrderQty` → `Qty` | Loader层重命名，Builder层统一访问 |
+| 主动性语义 | 只看入场瞬间(On Entry) | 被动单后续成交仍归入Ch11/Ch12 |
+
+**测试结果:** 34个测试全部通过 ✅（含7个v3专属测试）
+
+### [2026-01-26] - Prompt R2.1: 诊断报告器增强
+
+**变更目标:** 增强 `diagnostics/reporter.py`，新增 v3 架构的通道约束验证功能
+
+**文件变更:**
+1. `l2_image_builder/diagnostics/reporter.py` - 核心增强
+2. `l2_image_builder/diagnostics/__init__.py` - 导出更新
+3. `tests/test_diagnostics.py` - 新增测试用例
+
+**核心变更:**
+
+1. **新增 `validate_channel_constraints()` 函数**
+   ```python
+   def validate_channel_constraints(image: np.ndarray) -> Dict:
+       """
+       v3: 验证通道数学约束
+       - Ch7 = Ch9 + Ch11 (买单 = 主动买入委托 + 非主动买入)
+       - Ch8 = Ch10 + Ch12 (卖单 = 主动卖出委托 + 非主动卖出)
+       """
+   ```
+   - 返回 `{valid, buy_constraint, sell_constraint, errors}`
+   - 约束容差: `1e-6`
+
+2. **更新 `CHANNEL_NAMES` 常量**
+   - Ch9: `'委托主动买'` → `'主动买入委托'` (强调来源于委托表)
+   - Ch10: `'委托主动卖'` → `'主动卖出委托'`
+   - Ch11: `'非主动买'` → `'非主动买入'`
+   - Ch12: `'非主动卖'` → `'非主动卖出'`
+
+3. **增强 `check_health()` 方法**
+   - 新增可选参数 `image: np.ndarray = None`
+   - 当传入 image 时，自动进行 v3 约束检查
+   - 向后兼容：不传 image 时行为不变
+
+4. **增强 `generate_stock_diagnostics()` 方法**
+   - 新增返回字段 `v3_constraints`:
+     ```python
+     'v3_constraints': {
+         'buy_decomposition': "Ch7(x) = Ch9(y) + Ch11(z)",
+         'sell_decomposition': "Ch8(x) = Ch10(y) + Ch12(z)",
+         'valid': bool,
+         'buy_valid': bool,
+         'sell_valid': bool,
+         'buy_diff': float,
+         'sell_diff': float,
+     }
+     ```
+
+5. **新增 `HEALTH_THRESHOLDS` 配置项**
+   - `'constraint_tolerance': 1e-6` - 约束验证容差
+
+**测试用例新增 (15个):**
+
+- `TestV3ChannelConstraints` 类 (8个测试):
+  - `test_validate_channel_constraints_valid_buy`: 有效买方约束
+  - `test_validate_channel_constraints_valid_sell`: 有效卖方约束
+  - `test_validate_channel_constraints_invalid_buy`: 无效买方约束
+  - `test_validate_channel_constraints_invalid_sell`: 无效卖方约束
+  - `test_validate_channel_constraints_both_invalid`: 双方都无效
+  - `test_validate_channel_constraints_zero_image`: 全零图像
+  - `test_validate_channel_constraints_distributed`: 分布式值
+  - `test_validate_channel_constraints_invalid_shape`: 无效形状
+
+- `TestV3DiagnosticsIntegration` 类 (4个测试):
+  - `test_generate_stock_diagnostics_v3_constraints`: 诊断包含v3约束
+  - `test_check_health_with_image_constraint_valid`: 约束有效健康检查
+  - `test_check_health_with_image_constraint_invalid`: 约束无效健康检查
+  - `test_check_health_without_image_backward_compatible`: 向后兼容
+
+- `TestV3ChannelNames` 类 (3个测试):
+  - `test_channel_names_count`: 通道数量
+  - `test_channel_names_v3_updates`: v3名称更新
+  - `test_channel_names_in_diagnostics`: 诊断中名称正确
+
+**测试结果:** 42个测试全部通过 ✅（含15个v3专属测试）
+
+### [2026-01-26] - Prompt R2.2: 图像构建入口更新
+
+**目标:** 更新 `builder/image_builder.py` 支持 v3 架构要求
+
+**主要变更:**
+
+1. **`builder/image_builder.py` 代码更新**:
+   - 文件头添加 v3 架构说明文档
+   - 新增日志导入和 logger 实例
+   - 导入 `validate_channel_constraints` 用于约束检查
+   - 导入 `build_active_seqs_from_trade` 用于深交所 ActiveSeqs 自动构建
+   - `build_single_stock()` 新增 `validate_constraints` 参数（默认 True）
+   - `build_single_stock()` 新增 v3 字段验证逻辑：
+     - 上交所委托表必须包含 `IsAggressive` 和 `BizIndex`
+     - 验证失败抛出 `ValueError` 并提示解决方案
+   - `build_single_stock()` 集成约束检查：构建后验证 Ch7=Ch9+Ch11, Ch8=Ch10+Ch12
+   - `build_image()`, `build_l2_image()`, `build_l2_image_with_stats()` 均添加 `validate_constraints` 参数
+
+2. **`tests/test_integration_builder.py` fixtures 更新**:
+   - `sh_trade_pandas`: 添加 `BizIndex` 字段
+   - `sh_order_pandas`: 添加 `BizIndex` 和 `IsAggressive` 字段
+   - `test_trade_only`: 空委托表添加 `IsAggressive` 和 `BizIndex` 字段
+
+3. **`tests/test_sh_builder.py` 测试修复**:
+   - `TestChannelFilling` 类所有空 df_order 添加 `IsAggressive` 字段
+   - `test_channel_7_8_new_orders`: 非空委托表添加 `IsAggressive` 字段
+   - `test_channel_11_12_same_as_7_8`: 添加 `IsAggressive: [False, False]` 以测试 Ch7=Ch11
+   - `test_channel_13_14_cancel_orders`: 撤单添加 `IsAggressive: [None, None, None]`
+   - `TestEdgeCases` 类所有测试添加 `IsAggressive` 字段
+   - `test_channel_9_10_same_as_1_2` 重命名为 `test_channel_9_10_only_from_orders`
+     - 更新测试逻辑：v3 中 Ch9/10 只从委托表填充，不从成交表
+   - `test_validate_consistency`: 更新断言键名为 v3 格式
+     - `ch1_eq_ch9` → `v3_buy_constraint`
+     - `ch7_eq_ch11` → `v3_constraints_valid`
+
+**v3 验证逻辑:**
+```python
+# 上交所委托表必需字段检查
+if exchange == 'SH':
+    required_order_fields = ['IsAggressive', 'BizIndex']
+    missing_fields = [f for f in required_order_fields if f not in order_cols]
+    if missing_fields:
+        raise ValueError(f"上交所委托表缺少必需字段: {missing_fields}")
+
+# 约束检查（构建后）
+if validate_constraints:
+    constraint_result = validate_channel_constraints(image)
+    if not constraint_result['valid']:
+        logger.warning(f"v3约束验证失败: {constraint_result}")
+```
+
+**API 变更:**
+```python
+# 所有构建函数新增 validate_constraints 参数
+def build_single_stock(self, df_trade, df_order, 
+                       active_seqs=None, 
+                       validate_constraints=True) -> np.ndarray
+
+@classmethod
+def build_image(cls, stock_code, df_trade, df_order, 
+                trade_date=None,
+                validate_constraints=True) -> np.ndarray
+
+def build_l2_image(stock_code, df_trade, df_order,
+                   validate_constraints=True) -> np.ndarray
+
+def build_l2_image_with_stats(stock_code, df_trade, df_order,
+                              validate_constraints=True) -> Tuple
+```
+
+**测试结果:** 333 个测试全部通过 ✅
+
 ### [2026-01-21] - Phase 1 初始化
 
 **新增:**
@@ -984,15 +1272,10 @@ print(f"阈值: {threshold:.2f}, 有效: {result['valid']}, 大单占比: {resul
 
 ## 🎯 下一步计划
 
-1. ✅ ~~**Prompt 1.2**: 增强数据加载器，添加懒加载、批量处理功能~~
-2. ✅ ~~**Prompt 1.3**: 数据清洗模块（简化版）~~
-3. ✅ ~~**Prompt 2.1**: 分位数计算（Polars 向量化）~~
-4. ✅ ~~**Prompt 2.2**: 母单还原与当日阈值（简化版）~~
-5. ✅ ~~**Prompt 2.3**: 深交所撤单价格关联~~
-6. ✅ ~~**Prompt 3.1**: 上交所图像构建器（简化版）~~
-7. ✅ ~~**Prompt 3.2**: 深交所图像构建器~~
-8. ✅ ~~**Prompt 3.3**: 归一化与整合构建器~~
-9. ✅ ~~**Prompt 4.1**: LMDB 存储模块~~
-10. ✅ ~~**Prompt 4.2**: 诊断报告与Dataset模块~~
-11. ✅ ~~**Prompt 5.1**: Dask 并行处理~~
-12. **Prompt 5.2**: 监控告警与增量更新（可选）
+1. ✅ ~~**Prompt R1.1**: 上交所图像构建器v3重构~~
+2. ✅ ~~**Prompt R1.2**: 深交所图像构建器v3重构~~
+3. ✅ ~~**Prompt R2.1**: 诊断报告器增强（v3约束验证）~~
+4. ✅ ~~**Prompt R2.2**: 图像构建入口更新~~
+5. ⏳ **Prompt R3.1**: 数据加载器适配（BizIndex/IsAggressive）
+6. ⏳ **Prompt R3.2**: 配置与常量更新
+7. **Prompt 5.2**: 监控告警与增量更新（可选）

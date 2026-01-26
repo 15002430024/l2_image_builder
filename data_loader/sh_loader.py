@@ -4,12 +4,19 @@
 加载上交所逐笔成交、逐笔委托数据
 注意：上交所委托数据已预处理还原，Qty字段为完整母单量
 
+v3 架构更新（2026-01-26）：
+- 委托表必须包含 BizIndex 和 IsAggressive 字段
+- BizIndex 用于排序（同一毫秒内区分先后顺序）
+- IsAggressive 用于区分主动/被动委托（通道9-12分流）
+- 成交表新增 ActiveSide 统一主动方向标识
+
 增强功能（Prompt 1.2）：
 - 使用 pl.scan_parquet() 进行懒加载，只读取需要的列
 - 支持批量加载多只股票数据
 - 优化内存使用，延迟执行查询
 """
 
+import logging
 from typing import Optional, Tuple, List, Iterator, Union
 from pathlib import Path
 
@@ -33,11 +40,50 @@ if POLARS_AVAILABLE:
 import pandas as pd
 
 
+logger = logging.getLogger(__name__)
+
+
 # 默认连续竞价时段
 DEFAULT_TIME_RANGES = [
     (93000000, 113000000),   # 上午 9:30:00.000 - 11:30:00.000
     (130000000, 145700000),  # 下午 13:00:00.000 - 14:57:00.000
 ]
+
+
+# ==================== v3 列常量定义 ====================
+
+# v3: 委托表必需字段（含 BizIndex 用于排序，IsAggressive 用于通道分流）
+ORDER_COLUMNS_V3_MINIMAL = [
+    "SecurityID", "TickTime", "BizIndex",  # ⭐ BizIndex 必需！
+    "OrdID", "OrdType", "Side", "Price", "Qty", "IsAggressive"
+]
+
+# v3: 完整委托列
+ORDER_COLUMNS_V3_FULL = [
+    "SecurityID", "TickTime", "BizIndex", 
+    "OrdID", "OrdType", "Side", "Price", "Qty", "IsAggressive"
+]
+
+# v3: 成交表必需字段（含 BizIndex 和 ActiveSide）
+TRADE_COLUMNS_V3_MINIMAL = [
+    "SecurityID", "TickTime", "BizIndex",  # ⭐ BizIndex 必需！
+    "BuyOrderNO", "SellOrderNO", "Price", "Qty", "TradeMoney", 
+    "ActiveSide",  # ⭐ 统一主动方向（1=主动买, 2=主动卖, 0=未知）
+    "TickBSFlag"   # 兼容字段
+]
+
+# v3: 完整成交列
+TRADE_COLUMNS_V3_FULL = [
+    "SecurityID", "TickTime", "BizIndex", 
+    "BuyOrderNO", "SellOrderNO", "Price", "Qty", "TradeMoney",
+    "ActiveSide", "TickBSFlag"
+]
+
+# v3: 委托表必需字段名称（用于验证）
+V3_REQUIRED_ORDER_FIELDS = ['BizIndex', 'OrdType', 'Side', 'Price', 'Qty', 'IsAggressive']
+
+# v3: 成交表必需字段名称（用于验证）
+V3_REQUIRED_TRADE_FIELDS = ['BizIndex', 'BuyOrderNO', 'SellOrderNO', 'Price', 'Qty']
 
 
 class SHDataLoader:
@@ -48,6 +94,11 @@ class SHDataLoader:
     - 成交表: sh_trade_data，包含 TickBSFlag 标识主动方向
     - 委托表: sh_order_data，已预处理还原，Qty为完整母单量
     
+    v3 架构要求（2026-01-26）：
+    - 委托表必须包含 BizIndex（排序）和 IsAggressive（通道分流）
+    - 成交表应包含 ActiveSide 统一主动方向标识
+    - 加载时自动验证必需字段
+    
     增强功能：
     - 懒加载模式：使用 scan_parquet 延迟加载，减少内存占用
     - 列选择：只读取需要的列，提高I/O效率
@@ -55,38 +106,38 @@ class SHDataLoader:
     - 时间过滤下推：在数据读取时就进行过滤
     """
     
-    # 成交表字段映射
+    # 成交表字段映射（v3 更新）
     TRADE_COLUMNS = {
         "SecurityID": "str",      # 证券代码
         "TickTime": "int",        # 时间 HHMMSSmmm
+        "BizIndex": "int",        # ⭐ v3: 逐笔序号（排序必需）
         "BuyOrderNO": "int",      # 买方订单号
         "SellOrderNO": "int",     # 卖方订单号
         "Price": "float",         # 成交价格
         "Qty": "int",             # 成交数量
         "TradeMoney": "float",    # 成交金额
-        "TickBSFlag": "str",      # B=主动买, S=主动卖
+        "ActiveSide": "int",      # ⭐ v3: 统一主动方向（1=买, 2=卖, 0=未知）
+        "TickBSFlag": "str",      # B=主动买, S=主动卖（兼容字段）
     }
     
-    # 构建 Image 所需的最小成交列
-    TRADE_COLUMNS_MINIMAL = [
-        "SecurityID", "TickTime", "Price", "Qty", "TickBSFlag"
-    ]
+    # 构建 Image 所需的最小成交列（v3 版本）
+    TRADE_COLUMNS_MINIMAL = TRADE_COLUMNS_V3_MINIMAL
     
-    # 委托表字段映射（已预处理）
+    # 委托表字段映射（v3 更新：包含 IsAggressive）
     ORDER_COLUMNS = {
         "SecurityID": "str",      # 证券代码
         "TickTime": "int",        # 委托时间
+        "BizIndex": "int",        # ⭐ v3: 逐笔序号（排序必需）
         "OrdID": "int",           # 委托单号
         "OrdType": "str",         # New=新增, Cancel=撤单
         "Side": "str",            # B=买入, S=卖出
         "Price": "float",         # 委托价格（撤单已补全）
         "Qty": "int",             # 委托数量（已还原完整母单量）
+        "IsAggressive": "bool",   # ⭐ v3: 进攻性标识（True=主动, False=被动, None=撤单）
     }
     
-    # 构建 Image 所需的最小委托列
-    ORDER_COLUMNS_MINIMAL = [
-        "SecurityID", "TickTime", "OrdType", "Side", "Price", "Qty"
-    ]
+    # 构建 Image 所需的最小委托列（v3 版本）
+    ORDER_COLUMNS_MINIMAL = ORDER_COLUMNS_V3_MINIMAL
     
     def __init__(
         self,
@@ -169,6 +220,7 @@ class SHDataLoader:
         time_filter: Optional[bool] = None,
         time_ranges: Optional[List[Tuple[int, int]]] = None,
         minimal_columns: bool = False,
+        validate_v3_fields: bool = True,
     ) -> DataFrame:
         """
         加载上交所委托数据（已预处理）
@@ -179,9 +231,13 @@ class SHDataLoader:
             time_filter: 是否进行时间过滤，None 使用默认设置
             time_ranges: 时间范围
             minimal_columns: 是否只加载构建 Image 所需的最小列
+            validate_v3_fields: 是否验证 v3 必需字段（默认 True）
         
         Returns:
             委托数据 DataFrame
+        
+        Raises:
+            ValueError: 缺少 v3 必需字段时抛出
         """
         filepath = self.get_order_path(date)
         
@@ -199,6 +255,10 @@ class SHDataLoader:
             use_polars=self.use_polars,
         )
         
+        # v3: 验证必需字段
+        if validate_v3_fields:
+            self._validate_order_v3_fields(df)
+        
         # 确定是否进行时间过滤
         do_time_filter = time_filter if time_filter is not None else self.default_time_filter
         
@@ -211,6 +271,32 @@ class SHDataLoader:
         df = filter_positive(df, ["Qty"])
         
         return df
+    
+    def _validate_order_v3_fields(self, df: DataFrame) -> None:
+        """
+        验证委托表的 v3 必需字段
+        
+        v3 必需字段：BizIndex, OrdType, Side, Price, Qty, IsAggressive
+        
+        Args:
+            df: 委托数据 DataFrame
+        
+        Raises:
+            ValueError: 缺少必需字段时抛出
+        """
+        if is_polars_df(df):
+            existing_cols = set(df.columns)
+        else:
+            existing_cols = set(df.columns.tolist())
+        
+        missing = [f for f in V3_REQUIRED_ORDER_FIELDS if f not in existing_cols]
+        
+        if missing:
+            raise ValueError(
+                f"委托表缺少 v3 必需字段: {missing}。"
+                f"请确保已使用数据预处理脚本生成 derived_sh_orders。"
+                f"特别注意：BizIndex 是排序必需字段，IsAggressive 是通道分流必需字段！"
+            )
     
     def load_both(
         self,
@@ -691,3 +777,111 @@ class SHDataLoader:
             return trade_df.filter(pl.col("TickBSFlag") == "S")
         else:
             return trade_df[trade_df["TickBSFlag"] == "S"]
+    
+    # ========== v3 辅助方法（R3.1 新增）==========
+    
+    def get_aggressive_orders(self, order_df: DataFrame) -> DataFrame:
+        """
+        获取进攻型委托（IsAggressive=True）
+        
+        v3 架构中，进攻型委托映射到通道 9（买）和通道 10（卖）。
+        
+        Args:
+            order_df: 委托数据（必须包含 IsAggressive 字段）
+        
+        Returns:
+            进攻型委托 DataFrame
+        """
+        if is_polars_df(order_df):
+            return order_df.filter(
+                (pl.col('OrdType') == 'New') & 
+                (pl.col('IsAggressive') == True)
+            )
+        else:
+            mask = (order_df['OrdType'] == 'New') & (order_df['IsAggressive'] == True)
+            return order_df[mask]
+    
+    def get_passive_orders(self, order_df: DataFrame) -> DataFrame:
+        """
+        获取防守型委托（IsAggressive=False）
+        
+        v3 架构中，防守型委托映射到通道 11（买）和通道 12（卖）。
+        
+        Args:
+            order_df: 委托数据（必须包含 IsAggressive 字段）
+        
+        Returns:
+            防守型委托 DataFrame
+        """
+        if is_polars_df(order_df):
+            return order_df.filter(
+                (pl.col('OrdType') == 'New') & 
+                (pl.col('IsAggressive') == False)
+            )
+        else:
+            mask = (order_df['OrdType'] == 'New') & (order_df['IsAggressive'] == False)
+            return order_df[mask]
+    
+    def get_aggressive_buy_orders(self, order_df: DataFrame) -> DataFrame:
+        """获取进攻型买单（Ch9）"""
+        if is_polars_df(order_df):
+            return order_df.filter(
+                (pl.col('OrdType') == 'New') & 
+                (pl.col('Side') == 'B') &
+                (pl.col('IsAggressive') == True)
+            )
+        else:
+            mask = (
+                (order_df['OrdType'] == 'New') & 
+                (order_df['Side'] == 'B') &
+                (order_df['IsAggressive'] == True)
+            )
+            return order_df[mask]
+    
+    def get_aggressive_sell_orders(self, order_df: DataFrame) -> DataFrame:
+        """获取进攻型卖单（Ch10）"""
+        if is_polars_df(order_df):
+            return order_df.filter(
+                (pl.col('OrdType') == 'New') & 
+                (pl.col('Side') == 'S') &
+                (pl.col('IsAggressive') == True)
+            )
+        else:
+            mask = (
+                (order_df['OrdType'] == 'New') & 
+                (order_df['Side'] == 'S') &
+                (order_df['IsAggressive'] == True)
+            )
+            return order_df[mask]
+    
+    def get_passive_buy_orders(self, order_df: DataFrame) -> DataFrame:
+        """获取防守型买单（Ch11）"""
+        if is_polars_df(order_df):
+            return order_df.filter(
+                (pl.col('OrdType') == 'New') & 
+                (pl.col('Side') == 'B') &
+                (pl.col('IsAggressive') == False)
+            )
+        else:
+            mask = (
+                (order_df['OrdType'] == 'New') & 
+                (order_df['Side'] == 'B') &
+                (order_df['IsAggressive'] == False)
+            )
+            return order_df[mask]
+    
+    def get_passive_sell_orders(self, order_df: DataFrame) -> DataFrame:
+        """获取防守型卖单（Ch12）"""
+        if is_polars_df(order_df):
+            return order_df.filter(
+                (pl.col('OrdType') == 'New') & 
+                (pl.col('Side') == 'S') &
+                (pl.col('IsAggressive') == False)
+            )
+        else:
+            mask = (
+                (order_df['OrdType'] == 'New') & 
+                (order_df['Side'] == 'S') &
+                (order_df['IsAggressive'] == False)
+            )
+            return order_df[mask]

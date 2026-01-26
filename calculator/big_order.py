@@ -144,9 +144,16 @@ def compute_threshold(
     std_multiplier: float = 1.0,
 ) -> float:
     """
-    计算大单阈值
+    计算大单阈值（当日统计值）
     
     公式: Threshold = Mean(V) + std_multiplier × Std(V)
+    
+    ⚠️ 适用场景说明（v3架构）：
+    - ✅ 离线训练 / 历史回测：使用当日统计值
+    - ❌ 实盘交易：需改用 Lookback 窗口（如过去20日均值）
+    
+    本实现针对"复现研报"目标，采用当日统计值。
+    研报中的"20"通常指 ViViT 输入序列长度，而非阈值 Lookback。
     
     Args:
         parent_amounts: {订单号: 累计金额} 字典
@@ -505,6 +512,13 @@ def compute_threshold_daily(
     计算当日大单阈值
     
     公式: Threshold = Mean(V) + std_multiplier × Std(V)
+    
+    ⚠️ 适用场景说明（v3架构）：
+    - ✅ 离线训练 / 历史回测：使用当日统计值
+    - ❌ 实盘交易：需改用 Lookback 窗口（如过去20日均值）
+    
+    本实现针对"复现研报"目标，采用当日统计值。
+    研报中的"20"通常指 ViViT 输入序列长度，而非阈值 Lookback。
     
     优点:
     - 无需回溯历史数据

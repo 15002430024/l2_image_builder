@@ -33,8 +33,16 @@ class Config:
     percentiles: Tuple[float, ...] = (12.5, 25, 37.5, 50, 62.5, 75, 87.5)
     
     # ========== 大单阈值 ==========
-    # 当日计算: Mean(V) + threshold_std_multiplier × Std(V)
+    # v3阈值计算说明:
+    # - 公式: Threshold = Mean(V) + threshold_std_multiplier × Std(V)
+    # - 基于当日数据分布计算，适用于离线训练/历史回测
+    # - 如需实盘使用，需另行实现 Lookback 逻辑
     threshold_std_multiplier: float = 1.0
+    
+    # ========== v3 架构配置 ==========
+    architecture_version: str = "v3"  # 架构版本标识
+    use_intent_based_channels: bool = True  # 意图导向（通道9/10从委托表填充）
+    validate_channel_constraints: bool = True  # 验证 Ch7=Ch9+Ch11, Ch8=Ch10+Ch12
     
     # ========== 时间过滤（连续竞价时段）==========
     # 格式: HHMMSSmmm，如 93000000 = 09:30:00.000
@@ -243,7 +251,26 @@ def load_config(config_path: Optional[str] = None, **overrides) -> Config:
 
 # ========== 通道常量（便于引用）==========
 class Channels:
-    """通道索引常量"""
+    """
+    通道索引常量
+    
+    v3架构说明（2026-01-26更新）：
+    - 通道0-6：来自成交表
+    - 通道7-14：来自委托表
+    - 通道9/10：v3改为从委托表填充（进攻意图），不再是成交量
+    
+    数学约束（v3必须满足）：
+    - Ch7 = Ch9 + Ch11 (买单 = 主动买 + 非主动买)
+    - Ch8 = Ch10 + Ch12 (卖单 = 主动卖 + 非主动卖)
+    
+    物理含义：
+    - 通道9 (AGGRESSIVE_BUY_ORDER): 进攻型买单，入场即吃单（Taker）
+    - 通道10 (AGGRESSIVE_SELL_ORDER): 进攻型卖单，入场即吃单（Taker）
+    - 通道11 (PASSIVE_BUY_ORDER): 防守型买单，入场挂单等待（Maker）
+    - 通道12 (PASSIVE_SELL_ORDER): 防守型卖单，入场挂单等待（Maker）
+    """
+    
+    # 成交通道 (来自成交表)
     ALL_TRADE = 0           # 全部成交
     ACTIVE_BUY_TRADE = 1    # 主动买入成交
     ACTIVE_SELL_TRADE = 2   # 主动卖出成交
@@ -251,14 +278,22 @@ class Channels:
     BIG_SELL = 4            # 大卖单
     SMALL_BUY = 5           # 小买单
     SMALL_SELL = 6          # 小卖单
+    
+    # 委托通道 (来自委托表)
     BUY_ORDER = 7           # 买单委托
     SELL_ORDER = 8          # 卖单委托
-    ACTIVE_BUY_ORDER = 9    # 主动买入委托
-    ACTIVE_SELL_ORDER = 10  # 主动卖出委托
-    PASSIVE_BUY = 11        # 非主动买入
-    PASSIVE_SELL = 12       # 非主动卖出
+    AGGRESSIVE_BUY_ORDER = 9    # v3: 进攻型买单意图（委托表）
+    AGGRESSIVE_SELL_ORDER = 10  # v3: 进攻型卖单意图（委托表）
+    PASSIVE_BUY_ORDER = 11      # v3: 防守型买单（委托表）
+    PASSIVE_SELL_ORDER = 12     # v3: 防守型卖单（委托表）
     CANCEL_BUY = 13         # 撤买
     CANCEL_SELL = 14        # 撤卖
+    
+    # 兼容旧名称（已废弃，建议使用新名称）
+    ACTIVE_BUY_ORDER = 9    # @deprecated: 使用 AGGRESSIVE_BUY_ORDER
+    ACTIVE_SELL_ORDER = 10  # @deprecated: 使用 AGGRESSIVE_SELL_ORDER
+    PASSIVE_BUY = 11        # @deprecated: 使用 PASSIVE_BUY_ORDER
+    PASSIVE_SELL = 12       # @deprecated: 使用 PASSIVE_SELL_ORDER
     
     # 通道分组
     TRADE_CHANNELS = (0, 1, 2, 3, 4, 5, 6)
@@ -267,6 +302,61 @@ class Channels:
     SMALL_ORDER_CHANNELS = (5, 6)
     ACTIVE_CHANNELS = (1, 2, 9, 10)
     CANCEL_CHANNELS = (13, 14)
+    
+    # v3 约束关系验证
+    @staticmethod
+    def validate_constraints(image, tolerance: float = 1e-6) -> bool:
+        """
+        验证 v3 通道约束
+        
+        约束条件：
+        - Ch7 = Ch9 + Ch11 (买单 = 主动买 + 非主动买)
+        - Ch8 = Ch10 + Ch12 (卖单 = 主动卖 + 非主动卖)
+        
+        Args:
+            image: 图像数组，形状 (15, 8, 8) 或类似
+            tolerance: 容差阈值
+        
+        Returns:
+            bool: 是否满足约束
+        """
+        ch7 = image[7].sum()
+        ch9 = image[9].sum()
+        ch11 = image[11].sum()
+        ch8 = image[8].sum()
+        ch10 = image[10].sum()
+        ch12 = image[12].sum()
+        
+        buy_valid = abs(ch7 - (ch9 + ch11)) < tolerance
+        sell_valid = abs(ch8 - (ch10 + ch12)) < tolerance
+        
+        return buy_valid and sell_valid
+    
+    @staticmethod
+    def get_constraint_details(image) -> dict:
+        """
+        获取通道约束详情（用于调试）
+        
+        Returns:
+            dict: 包含各通道总量和误差信息
+        """
+        ch7 = image[7].sum()
+        ch9 = image[9].sum()
+        ch11 = image[11].sum()
+        ch8 = image[8].sum()
+        ch10 = image[10].sum()
+        ch12 = image[12].sum()
+        
+        return {
+            'ch7_buy_order': float(ch7),
+            'ch9_aggressive_buy': float(ch9),
+            'ch11_passive_buy': float(ch11),
+            'buy_error': float(ch7 - (ch9 + ch11)),
+            'ch8_sell_order': float(ch8),
+            'ch10_aggressive_sell': float(ch10),
+            'ch12_passive_sell': float(ch12),
+            'sell_error': float(ch8 - (ch10 + ch12)),
+        }
 
 
 # 默认全局配置实例
