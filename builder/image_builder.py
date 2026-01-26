@@ -371,12 +371,12 @@ class Level2ImageBuilder:
             if is_polars_df(df_order):
                 side = row['Side']
                 price = row['Price']
-                qty = row['OrderQty']
+                qty = row['Qty']  # v3: 深交所 OrderQty 已在 Loader 层归一化为 Qty
                 appl_seq = row['ApplSeqNum']
             else:
                 side = row['Side']
                 price = row['Price']
-                qty = row['OrderQty']
+                qty = row['Qty']  # v3: 深交所 OrderQty 已在 Loader 层归一化为 Qty
                 appl_seq = row['ApplSeqNum']
             
             if price <= 0:
