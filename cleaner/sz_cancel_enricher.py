@@ -81,11 +81,13 @@ def enrich_sz_cancel_price_polars(
     """
     深交所撤单价格关联（Polars 向量化版本）
     
-    将撤单记录的 LastPx=0 替换为原始委托价格
+    R3.2: 使用标准列名 Price/BuyOrderNO/SellOrderNO/BizIndex/TickTime
+    
+    将撤单记录的 Price=0 替换为原始委托价格
     
     关联逻辑：
-    - BidApplSeqNum > 0 → 撤买单 → 用 BidApplSeqNum 关联委托表
-    - OfferApplSeqNum > 0 → 撤卖单 → 用 OfferApplSeqNum 关联委托表
+    - BuyOrderNO > 0 → 撤买单 → 用 BuyOrderNO 关联委托表
+    - SellOrderNO > 0 → 撤卖单 → 用 SellOrderNO 关联委托表
     """
     if not POLARS_AVAILABLE:
         raise RuntimeError("Polars 不可用")
@@ -98,16 +100,16 @@ def enrich_sz_cancel_price_polars(
         logger.debug("无撤单记录，跳过价格关联")
         return trade_df
     
-    # 构建委托价格映射
+    # 构建委托价格映射（使用标准列名 BizIndex）
     order_price = order_df.select([
-        pl.col("ApplSeqNum"),
+        pl.col("BizIndex"),
         pl.col("Price").alias("_OrderPrice"),
     ])
     
-    # 分离撤买单和撤卖单
-    df_cancel_buy = df_cancel.filter(pl.col("BidApplSeqNum") > 0)
+    # 分离撤买单和撤卖单（使用标准列名 BuyOrderNO/SellOrderNO）
+    df_cancel_buy = df_cancel.filter(pl.col("BuyOrderNO") > 0)
     df_cancel_sell = df_cancel.filter(
-        (pl.col("OfferApplSeqNum") > 0) & (pl.col("BidApplSeqNum") <= 0)
+        (pl.col("SellOrderNO") > 0) & (pl.col("BuyOrderNO") <= 0)
     )
     
     result_parts = [df_exec]
@@ -116,11 +118,11 @@ def enrich_sz_cancel_price_polars(
     if df_cancel_buy.height > 0:
         df_cancel_buy = df_cancel_buy.join(
             order_price,
-            left_on="BidApplSeqNum",
-            right_on="ApplSeqNum",
+            left_on="BuyOrderNO",
+            right_on="BizIndex",
             how="left",
         ).with_columns(
-            pl.coalesce([pl.col("_OrderPrice"), pl.col("LastPx")]).alias("LastPx")
+            pl.coalesce([pl.col("_OrderPrice"), pl.col("Price")]).alias("Price")
         ).drop("_OrderPrice")
         result_parts.append(df_cancel_buy)
         logger.debug(f"处理撤买单: {df_cancel_buy.height} 条")
@@ -129,11 +131,11 @@ def enrich_sz_cancel_price_polars(
     if df_cancel_sell.height > 0:
         df_cancel_sell = df_cancel_sell.join(
             order_price,
-            left_on="OfferApplSeqNum",
-            right_on="ApplSeqNum",
+            left_on="SellOrderNO",
+            right_on="BizIndex",
             how="left",
         ).with_columns(
-            pl.coalesce([pl.col("_OrderPrice"), pl.col("LastPx")]).alias("LastPx")
+            pl.coalesce([pl.col("_OrderPrice"), pl.col("Price")]).alias("Price")
         ).drop("_OrderPrice")
         result_parts.append(df_cancel_sell)
         logger.debug(f"处理撤卖单: {df_cancel_sell.height} 条")
@@ -141,9 +143,9 @@ def enrich_sz_cancel_price_polars(
     # 合并
     result = pl.concat(result_parts)
     
-    # 按时间排序
-    if sort_by_time and "TransactTime" in result.columns:
-        result = result.sort("TransactTime")
+    # 按时间排序（使用标准列名 TickTime）
+    if sort_by_time and "TickTime" in result.columns:
+        result = result.sort("TickTime")
     
     return result
 
@@ -157,6 +159,7 @@ def enrich_sz_cancel_price_pandas(
 ) -> pd.DataFrame:
     """
     深交所撤单价格关联（Pandas 版本）
+    R3.2: 使用标准列名 Price/BuyOrderNO/SellOrderNO/BizIndex/TickTime
     """
     # 分离成交和撤单
     df_exec = trade_df[trade_df["ExecType"] == exec_type_trade].copy()
@@ -166,41 +169,41 @@ def enrich_sz_cancel_price_pandas(
         logger.debug("无撤单记录，跳过价格关联")
         return trade_df
     
-    # 构建委托价格映射
-    order_price_map = order_df.set_index("ApplSeqNum")["Price"].to_dict()
+    # 构建委托价格映射（使用标准列名 BizIndex）
+    order_price_map = order_df.set_index("BizIndex")["Price"].to_dict()
     
-    # 分离撤买单和撤卖单
-    mask_buy = df_cancel["BidApplSeqNum"] > 0
-    mask_sell = (df_cancel["OfferApplSeqNum"] > 0) & (~mask_buy)
+    # 分离撤买单和撤卖单（使用标准列名 BuyOrderNO/SellOrderNO）
+    mask_buy = df_cancel["BuyOrderNO"] > 0
+    mask_sell = (df_cancel["SellOrderNO"] > 0) & (~mask_buy)
     
     df_cancel_buy = df_cancel[mask_buy].copy()
     df_cancel_sell = df_cancel[mask_sell].copy()
     
     result_parts = [df_exec]
     
-    # 处理撤买单
+    # 处理撤买单（使用标准列名 BuyOrderNO/Price）
     if len(df_cancel_buy) > 0:
-        original_prices = df_cancel_buy["BidApplSeqNum"].map(order_price_map)
-        # 只替换 LastPx 为 0 或接近 0 的
-        mask_zero = df_cancel_buy["LastPx"] <= 0.001
-        df_cancel_buy.loc[mask_zero, "LastPx"] = original_prices[mask_zero]
+        original_prices = df_cancel_buy["BuyOrderNO"].map(order_price_map)
+        # 只替换 Price 为 0 或接近 0 的
+        mask_zero = df_cancel_buy["Price"] <= 0.001
+        df_cancel_buy.loc[mask_zero, "Price"] = original_prices[mask_zero]
         result_parts.append(df_cancel_buy)
         logger.debug(f"处理撤买单: {len(df_cancel_buy)} 条")
     
-    # 处理撤卖单
+    # 处理撤卖单（使用标准列名 SellOrderNO/Price）
     if len(df_cancel_sell) > 0:
-        original_prices = df_cancel_sell["OfferApplSeqNum"].map(order_price_map)
-        mask_zero = df_cancel_sell["LastPx"] <= 0.001
-        df_cancel_sell.loc[mask_zero, "LastPx"] = original_prices[mask_zero]
+        original_prices = df_cancel_sell["SellOrderNO"].map(order_price_map)
+        mask_zero = df_cancel_sell["Price"] <= 0.001
+        df_cancel_sell.loc[mask_zero, "Price"] = original_prices[mask_zero]
         result_parts.append(df_cancel_sell)
         logger.debug(f"处理撤卖单: {len(df_cancel_sell)} 条")
     
     # 合并
     result = pd.concat(result_parts, ignore_index=True)
     
-    # 按时间排序
-    if sort_by_time and "TransactTime" in result.columns:
-        result = result.sort_values("TransactTime").reset_index(drop=True)
+    # 按时间排序（使用标准列名 TickTime）
+    if sort_by_time and "TickTime" in result.columns:
+        result = result.sort_values("TickTime").reset_index(drop=True)
     
     return result
 

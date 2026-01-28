@@ -200,6 +200,10 @@ class SHDataLoader:
             use_polars=self.use_polars,
         )
         
+        # 列名兼容处理：BidOrdID/AskOrdID -> BuyOrderNO/SellOrderNO
+        # 逐笔数据分解模块输出 BidOrdID/AskOrdID，需要重命名为 BuyOrderNO/SellOrderNO
+        df = self._normalize_trade_columns(df)
+        
         # 确定是否进行时间过滤
         do_time_filter = time_filter if time_filter is not None else self.default_time_filter
         
@@ -210,6 +214,65 @@ class SHDataLoader:
         
         # 过滤异常值
         df = filter_positive(df, ["Price", "Qty"])
+        
+        return df
+    
+    def _normalize_trade_columns(self, df: DataFrame) -> DataFrame:
+        """
+        统一成交表列名和字段
+        
+        1. 将 BidOrdID/AskOrdID 重命名为 BuyOrderNO/SellOrderNO
+        2. 根据 ActiveSide 生成 TickBSFlag（如果缺失）
+        
+        Args:
+            df: 成交数据 DataFrame
+        
+        Returns:
+            统一后的 DataFrame
+        """
+        rename_map = {}
+        
+        if is_polars_df(df):
+            cols = df.columns
+            # 列名重命名
+            if 'BidOrdID' in cols and 'BuyOrderNO' not in cols:
+                rename_map['BidOrdID'] = 'BuyOrderNO'
+            if 'AskOrdID' in cols and 'SellOrderNO' not in cols:
+                rename_map['AskOrdID'] = 'SellOrderNO'
+            if rename_map:
+                df = df.rename(rename_map)
+            
+            # 根据 ActiveSide 生成 TickBSFlag（如果缺失）
+            cols = df.columns  # 更新列列表
+            if 'TickBSFlag' not in cols and 'ActiveSide' in cols:
+                # ActiveSide: 1=主动买, 2=主动卖, 0=未知
+                # TickBSFlag: 'B'=主动买, 'S'=主动卖, 'N'=未知
+                df = df.with_columns(
+                    pl.when(pl.col("ActiveSide") == 1).then(pl.lit("B"))
+                    .when(pl.col("ActiveSide") == 2).then(pl.lit("S"))
+                    .otherwise(pl.lit("N"))
+                    .alias("TickBSFlag")
+                )
+        else:
+            cols = df.columns.tolist()
+            # 列名重命名
+            if 'BidOrdID' in cols and 'BuyOrderNO' not in cols:
+                rename_map['BidOrdID'] = 'BuyOrderNO'
+            if 'AskOrdID' in cols and 'SellOrderNO' not in cols:
+                rename_map['AskOrdID'] = 'SellOrderNO'
+            if rename_map:
+                df = df.rename(columns=rename_map)
+            
+            # 根据 ActiveSide 生成 TickBSFlag（如果缺失）
+            cols = df.columns.tolist()  # 更新列列表
+            if 'TickBSFlag' not in cols and 'ActiveSide' in cols:
+                import numpy as np
+                conditions = [
+                    df['ActiveSide'] == 1,
+                    df['ActiveSide'] == 2,
+                ]
+                choices = ['B', 'S']
+                df['TickBSFlag'] = np.select(conditions, choices, default='N')
         
         return df
     
@@ -384,6 +447,46 @@ class SHDataLoader:
         
         # 添加正值过滤
         lf = lf.filter((pl.col("Price") > 0) & (pl.col("Qty") > 0))
+        
+        # 列名兼容处理：BidOrdID/AskOrdID -> BuyOrderNO/SellOrderNO
+        lf = self._normalize_trade_columns_lazy(lf)
+        
+        return lf
+    
+    def _normalize_trade_columns_lazy(self, lf: "pl.LazyFrame") -> "pl.LazyFrame":
+        """
+        统一懒加载成交表列名和字段
+        
+        1. 将 BidOrdID/AskOrdID 重命名为 BuyOrderNO/SellOrderNO
+        2. 根据 ActiveSide 生成 TickBSFlag（如果缺失）
+        
+        Args:
+            lf: 成交数据 LazyFrame
+        
+        Returns:
+            统一后的 LazyFrame
+        """
+        # 获取 LazyFrame 的 schema 来判断列名
+        schema = lf.collect_schema()
+        rename_map = {}
+        if 'BidOrdID' in schema and 'BuyOrderNO' not in schema:
+            rename_map['BidOrdID'] = 'BuyOrderNO'
+        if 'AskOrdID' in schema and 'SellOrderNO' not in schema:
+            rename_map['AskOrdID'] = 'SellOrderNO'
+        if rename_map:
+            lf = lf.rename(rename_map)
+        
+        # 根据 ActiveSide 生成 TickBSFlag（如果缺失）
+        schema = lf.collect_schema()  # 更新 schema
+        if 'TickBSFlag' not in schema and 'ActiveSide' in schema:
+            # ActiveSide: 1=主动买, 2=主动卖, 0=未知
+            # TickBSFlag: 'B'=主动买, 'S'=主动卖, 'N'=未知
+            lf = lf.with_columns(
+                pl.when(pl.col("ActiveSide") == 1).then(pl.lit("B"))
+                .when(pl.col("ActiveSide") == 2).then(pl.lit("S"))
+                .otherwise(pl.lit("N"))
+                .alias("TickBSFlag")
+            )
         
         return lf
     

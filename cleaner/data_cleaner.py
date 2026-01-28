@@ -78,6 +78,7 @@ class DataCleaner:
     """
     
     # 交易所列名配置
+    # R3.2 更新: 深交所使用归一化后的标准列名 (TickTime, Price, Qty)
     COLUMN_CONFIG = {
         "sh_trade": {
             "time_column": "TickTime",
@@ -91,15 +92,16 @@ class DataCleaner:
             "cancel_column": "OrdType",
             "cancel_value": "Cancel",  # 撤单标识
         },
+        # R3.2: 深交所使用归一化后的标准列名
         "sz_order": {
-            "time_column": "TransactTime",
-            "price_column": "LastPx",
-            "qty_column": "LastQty",
+            "time_column": "TickTime",  # 原 TransactTime
+            "price_column": "Price",     # 原 LastPx (委托表本身就是 Price)
+            "qty_column": "Qty",         # 原 OrderQty
         },
         "sz_trade": {
-            "time_column": "TransactTime",
-            "price_column": "LastPx",
-            "qty_column": "LastQty",
+            "time_column": "TickTime",   # 原 TransactTime
+            "price_column": "Price",     # 原 LastPx
+            "qty_column": "Qty",         # 原 LastQty
             "cancel_column": "ExecType",
             "cancel_value": "52",  # 深交所撤单类型
         },

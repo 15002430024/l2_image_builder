@@ -198,14 +198,16 @@ class QuantileCalculator:
         date: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        为深交所数据计算分位数（使用深交所字段名）
+        为深交所数据计算分位数
+        
+        R3.2 更新: 使用归一化后的标准列名 (Price, Qty)
         """
         return self.compute(
             df_trade, df_order, date,
-            price_col_trade="LastPx",
+            price_col_trade="Price",    # R3.2: 原 LastPx -> Price
             price_col_order="Price",
-            qty_col_trade="LastQty",
-            qty_col_order="OrderQty",
+            qty_col_trade="Qty",        # R3.2: 原 LastQty -> Qty
+            qty_col_order="Qty",        # R3.2: 原 OrderQty -> Qty
         )
     
     def get_price_bin(self, price: float) -> int:
@@ -366,9 +368,11 @@ def compute_quantile_bins_sz_polars(
     """
     深交所分位数计算（Polars 向量化版本）
     
+    R3.2 更新: 使用归一化后的标准列名 (Price, Qty)
+    
     特点：
     1. 只取成交记录（ExecType='70'），排除撤单
-    2. 字段名差异：成交表用 LastPx/LastQty，委托表用 Price/OrderQty
+    2. R3.2 后使用统一的标准列名 Price/Qty
     
     Args:
         df_trade: 成交表（包含 ExecType 列）
@@ -384,16 +388,16 @@ def compute_quantile_bins_sz_polars(
     # 只取成交记录（排除撤单）
     df_trade_exec = df_trade.filter(pl.col('ExecType') == '70')
     
-    # 联合价格（统一别名为 Price）
+    # 联合价格 - R3.2: 使用标准列名 Price
     all_prices = pl.concat([
-        df_trade_exec.select(pl.col('LastPx').alias('Price')),
+        df_trade_exec.select('Price'),  # R3.2: 原 LastPx -> Price
         df_order.select('Price')
     ])['Price'].drop_nulls().to_numpy()
     
-    # 联合数量（统一别名为 Qty）
+    # 联合数量 - R3.2: 使用标准列名 Qty
     all_volumes = pl.concat([
-        df_trade_exec.select(pl.col('LastQty').alias('Qty')),
-        df_order.select(pl.col('OrderQty').alias('Qty'))
+        df_trade_exec.select('Qty'),  # R3.2: 原 LastQty -> Qty
+        df_order.select('Qty')        # R3.2: 原 OrderQty -> Qty
     ])['Qty'].drop_nulls().to_numpy()
     
     # 过滤无效值
@@ -449,20 +453,22 @@ def compute_quantile_bins_sz_pandas(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     深交所分位数计算（Pandas 版本）
+    
+    R3.2 更新: 使用归一化后的标准列名 (Price, Qty)
     """
     # 只取成交记录
     df_trade_exec = df_trade[df_trade['ExecType'] == '70']
     
-    # 联合价格
+    # 联合价格 - R3.2: 使用标准列名 Price
     all_prices = pd.concat([
-        df_trade_exec['LastPx'],
+        df_trade_exec['Price'],  # R3.2: 原 LastPx -> Price
         df_order['Price']
     ], ignore_index=True).dropna().values
     
-    # 联合数量
+    # 联合数量 - R3.2: 使用标准列名 Qty
     all_volumes = pd.concat([
-        df_trade_exec['LastQty'],
-        df_order['OrderQty']
+        df_trade_exec['Qty'],    # R3.2: 原 LastQty -> Qty
+        df_order['Qty']          # R3.2: 原 OrderQty -> Qty
     ], ignore_index=True).dropna().values
     
     # 过滤无效值

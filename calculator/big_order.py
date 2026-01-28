@@ -105,36 +105,36 @@ def _restore_parent_orders_sz(
     """
     深交所母单还原
     
-    深交所没有 TradeMoney 字段，需要计算 LastPx × LastQty
+    R3.2 更新: 使用归一化后的标准列名 (Price, Qty, BuyOrderNO, SellOrderNO)
     """
     if is_polars_df(df_trade):
         # Polars: 先计算 TradeMoney，再聚合
         df = df_trade.with_columns([
-            (pl.col("LastPx") * pl.col("LastQty")).alias("TradeMoney")
+            (pl.col("Price") * pl.col("Qty")).alias("TradeMoney")  # R3.2: 原 LastPx*LastQty
         ])
         
-        buy_result = df.group_by("BidApplSeqNum").agg(
+        buy_result = df.group_by("BuyOrderNO").agg(  # R3.2: 原 BidApplSeqNum
             pl.col("TradeMoney").sum()
         )
-        sell_result = df.group_by("OfferApplSeqNum").agg(
+        sell_result = df.group_by("SellOrderNO").agg(  # R3.2: 原 OfferApplSeqNum
             pl.col("TradeMoney").sum()
         )
         
         buy_parent = dict(zip(
-            buy_result["BidApplSeqNum"].to_list(),
+            buy_result["BuyOrderNO"].to_list(),
             buy_result["TradeMoney"].to_list(),
         ))
         sell_parent = dict(zip(
-            sell_result["OfferApplSeqNum"].to_list(),
+            sell_result["SellOrderNO"].to_list(),
             sell_result["TradeMoney"].to_list(),
         ))
     else:
         # Pandas
         df = df_trade.copy()
-        df["TradeMoney"] = df["LastPx"] * df["LastQty"]
+        df["TradeMoney"] = df["Price"] * df["Qty"]  # R3.2: 原 LastPx*LastQty
         
-        buy_parent = df.groupby("BidApplSeqNum")["TradeMoney"].sum().to_dict()
-        sell_parent = df.groupby("OfferApplSeqNum")["TradeMoney"].sum().to_dict()
+        buy_parent = df.groupby("BuyOrderNO")["TradeMoney"].sum().to_dict()   # R3.2
+        sell_parent = df.groupby("SellOrderNO")["TradeMoney"].sum().to_dict() # R3.2
     
     return buy_parent, sell_parent
 
@@ -429,16 +429,18 @@ def restore_parent_orders_sz_polars(df_trade: "pl.DataFrame") -> Tuple[Dict, Dic
     """
     深交所母单还原（Polars 向量化版本）
     
+    R3.2 更新: 使用归一化后的标准列名 (Price, Qty, BuyOrderNO, SellOrderNO)
+    
     特点：
     1. 只处理成交记录（ExecType='70'），排除撤单
-    2. 计算 TradeMoney = LastPx × LastQty
+    2. 计算 TradeMoney = Price × Qty
     
     Args:
         df_trade: 深交所成交表（可包含撤单）
     
     Returns:
-        buy_parent: {BidApplSeqNum: 累计成交金额}
-        sell_parent: {OfferApplSeqNum: 累计成交金额}
+        buy_parent: {BuyOrderNO: 累计成交金额}
+        sell_parent: {SellOrderNO: 累计成交金额}
     """
     if not POLARS_AVAILABLE:
         raise RuntimeError("Polars 不可用")
@@ -446,30 +448,30 @@ def restore_parent_orders_sz_polars(df_trade: "pl.DataFrame") -> Tuple[Dict, Dic
     # 过滤成交记录（排除撤单）
     df_exec = df_trade.filter(pl.col('ExecType') == '70')
     
-    # 计算成交金额
+    # 计算成交金额 - R3.2: 使用标准列名
     df_exec = df_exec.with_columns(
-        (pl.col('LastPx') * pl.col('LastQty')).alias('TradeMoney')
+        (pl.col('Price') * pl.col('Qty')).alias('TradeMoney')  # R3.2: 原 LastPx*LastQty
     )
     
-    # 买方母单
+    # 买方母单 - R3.2: 使用 BuyOrderNO
     buy_parent = (
         df_exec
-        .group_by('BidApplSeqNum')
+        .group_by('BuyOrderNO')  # R3.2: 原 BidApplSeqNum
         .agg(pl.col('TradeMoney').sum().alias('amount'))
     )
     buy_dict = dict(zip(
-        buy_parent['BidApplSeqNum'].to_list(),
+        buy_parent['BuyOrderNO'].to_list(),
         buy_parent['amount'].to_list()
     ))
     
-    # 卖方母单
+    # 卖方母单 - R3.2: 使用 SellOrderNO
     sell_parent = (
         df_exec
-        .group_by('OfferApplSeqNum')
+        .group_by('SellOrderNO')  # R3.2: 原 OfferApplSeqNum
         .agg(pl.col('TradeMoney').sum().alias('amount'))
     )
     sell_dict = dict(zip(
-        sell_parent['OfferApplSeqNum'].to_list(),
+        sell_parent['SellOrderNO'].to_list(),
         sell_parent['amount'].to_list()
     ))
     
@@ -490,15 +492,17 @@ def restore_parent_orders_sh_pandas(df_trade: pd.DataFrame) -> Tuple[Dict, Dict]
 def restore_parent_orders_sz_pandas(df_trade: pd.DataFrame) -> Tuple[Dict, Dict]:
     """
     深交所母单还原（Pandas 版本）
+    
+    R3.2 更新: 使用归一化后的标准列名 (Price, Qty, BuyOrderNO, SellOrderNO)
     """
     # 过滤成交记录
     df_exec = df_trade[df_trade['ExecType'] == '70'].copy()
     
-    # 计算成交金额
-    df_exec['TradeMoney'] = df_exec['LastPx'] * df_exec['LastQty']
+    # 计算成交金额 - R3.2: 使用标准列名
+    df_exec['TradeMoney'] = df_exec['Price'] * df_exec['Qty']  # R3.2: 原 LastPx*LastQty
     
-    buy_dict = df_exec.groupby('BidApplSeqNum')['TradeMoney'].sum().to_dict()
-    sell_dict = df_exec.groupby('OfferApplSeqNum')['TradeMoney'].sum().to_dict()
+    buy_dict = df_exec.groupby('BuyOrderNO')['TradeMoney'].sum().to_dict()   # R3.2
+    sell_dict = df_exec.groupby('SellOrderNO')['TradeMoney'].sum().to_dict() # R3.2
     
     return buy_dict, sell_dict
 

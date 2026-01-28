@@ -154,6 +154,7 @@ class SZImageBuilder:
         构建主动方序列号集合（逐行版本）
         
         用于判断通道11/12：委托是否作为主动方成交
+        R3.2: 使用标准列名 BuyOrderNO/SellOrderNO
         """
         active_seqs = {'buy': set(), 'sell': set()}
         
@@ -165,8 +166,8 @@ class SZImageBuilder:
             iterator = (row for _, row in df_exec.iterrows())
         
         for row in iterator:
-            bid_seq = row['BidApplSeqNum']
-            offer_seq = row['OfferApplSeqNum']
+            bid_seq = row['BuyOrderNO']
+            offer_seq = row['SellOrderNO']
             
             if bid_seq > offer_seq:
                 active_seqs['buy'].add(int(bid_seq))
@@ -180,15 +181,16 @@ class SZImageBuilder:
     ) -> Dict[str, Set[int]]:
         """
         构建主动方序列号集合（向量化版本）
+        R3.2: 使用标准列名 BuyOrderNO/SellOrderNO
         """
         if is_polars_df(df):
             df_exec = df.filter(pl.col('ExecType') == '70')
-            bid_seqs = df_exec['BidApplSeqNum'].to_numpy()
-            offer_seqs = df_exec['OfferApplSeqNum'].to_numpy()
+            bid_seqs = df_exec['BuyOrderNO'].to_numpy()
+            offer_seqs = df_exec['SellOrderNO'].to_numpy()
         else:
             df_exec = df[df['ExecType'] == '70']
-            bid_seqs = df_exec['BidApplSeqNum'].values
-            offer_seqs = df_exec['OfferApplSeqNum'].values
+            bid_seqs = df_exec['BuyOrderNO'].values
+            offer_seqs = df_exec['SellOrderNO'].values
         
         if len(bid_seqs) == 0:
             return {'buy': set(), 'sell': set()}
@@ -210,6 +212,7 @@ class SZImageBuilder:
         
         v3: 成交表只填充通道 0-6，通道9/10已迁移到委托表
         填充通道: 0, 1-2, 3-6
+        R3.2: 使用标准列名 Price/Qty/BuyOrderNO/SellOrderNO
         """
         if is_polars_df(df):
             df_exec = df.filter(pl.col('ExecType') == '70')
@@ -219,8 +222,8 @@ class SZImageBuilder:
             iterator = (row for _, row in df_exec.iterrows())
         
         for row in iterator:
-            price = row['LastPx']
-            qty = row['LastQty']
+            price = row['Price']
+            qty = row['Qty']
             
             if price <= 0:
                 continue
@@ -228,8 +231,8 @@ class SZImageBuilder:
             pb = np.clip(np.digitize(price, self.price_bins), 0, 7)
             qb = np.clip(np.digitize(qty, self.qty_bins), 0, 7)
             
-            bid_seq = row['BidApplSeqNum']
-            offer_seq = row['OfferApplSeqNum']
+            bid_seq = row['BuyOrderNO']
+            offer_seq = row['SellOrderNO']
             
             # 通道0: 全部成交
             self.image[Channels.ALL_TRADE, pb, qb] += 1
@@ -259,8 +262,9 @@ class SZImageBuilder:
         处理撤单记录（逐行版本）
         
         填充通道: 13-14
+        R3.2: 使用标准列名 Price/Qty/BuyOrderNO/SellOrderNO
         
-        注意：撤单的 LastPx 原始值为 0，需要预先关联委托表补全
+        注意：撤单的 Price 原始值为 0，需要预先关联委托表补全
         """
         if is_polars_df(df):
             df_cancel = df.filter(pl.col('ExecType') == '52')
@@ -270,8 +274,8 @@ class SZImageBuilder:
             iterator = (row for _, row in df_cancel.iterrows())
         
         for row in iterator:
-            price = row['LastPx']
-            qty = row['LastQty']
+            price = row['Price']
+            qty = row['Qty']
             
             if price <= 0:
                 continue
@@ -279,8 +283,8 @@ class SZImageBuilder:
             pb = np.clip(np.digitize(price, self.price_bins), 0, 7)
             qb = np.clip(np.digitize(qty, self.qty_bins), 0, 7)
             
-            bid_seq = row['BidApplSeqNum']
-            offer_seq = row['OfferApplSeqNum']
+            bid_seq = row['BuyOrderNO']
+            offer_seq = row['SellOrderNO']
             
             # 通道13-14: 撤单
             if bid_seq > 0 and offer_seq == 0:
@@ -298,6 +302,7 @@ class SZImageBuilder:
         
         v3: 使用 ActiveSeqs 互斥分流
         填充通道: 7-8, 9-12
+        R3.2: 使用标准列名 Price/Qty/BizIndex
         
         互斥规则:
         - Ch7 = Ch9 + Ch11
@@ -310,8 +315,7 @@ class SZImageBuilder:
         
         for row in iterator:
             price = row['Price']
-            # v3: 支持归一化后的 Qty 字段（Loader层已将 OrderQty 重命名为 Qty）
-            qty = row.get('Qty', row.get('OrderQty'))
+            qty = row['Qty']
             
             if price <= 0:
                 continue
@@ -319,7 +323,7 @@ class SZImageBuilder:
             pb = np.clip(np.digitize(price, self.price_bins), 0, 7)
             qb = np.clip(np.digitize(qty, self.qty_bins), 0, 7)
             
-            appl_seq = int(row['ApplSeqNum'])
+            appl_seq = int(row['BizIndex'])
             side = row['Side']
             
             if side == '49':  # 买入
@@ -354,19 +358,20 @@ class SZImageBuilder:
         
         v3: 成交表只填充通道 0-6，通道9/10已迁移到委托表
         填充通道: 0, 1-2, 3-6
+        R3.2: 使用标准列名 Price/Qty/BuyOrderNO/SellOrderNO
         """
         if is_polars_df(df):
             df_exec = df.filter(pl.col('ExecType') == '70')
-            prices = df_exec['LastPx'].to_numpy()
-            qtys = df_exec['LastQty'].to_numpy()
-            bid_seqs = df_exec['BidApplSeqNum'].to_numpy()
-            offer_seqs = df_exec['OfferApplSeqNum'].to_numpy()
+            prices = df_exec['Price'].to_numpy()
+            qtys = df_exec['Qty'].to_numpy()
+            bid_seqs = df_exec['BuyOrderNO'].to_numpy()
+            offer_seqs = df_exec['SellOrderNO'].to_numpy()
         else:
             df_exec = df[df['ExecType'] == '70']
-            prices = df_exec['LastPx'].values
-            qtys = df_exec['LastQty'].values
-            bid_seqs = df_exec['BidApplSeqNum'].values
-            offer_seqs = df_exec['OfferApplSeqNum'].values
+            prices = df_exec['Price'].values
+            qtys = df_exec['Qty'].values
+            bid_seqs = df_exec['BuyOrderNO'].values
+            offer_seqs = df_exec['SellOrderNO'].values
         
         if len(prices) == 0:
             return
@@ -451,19 +456,20 @@ class SZImageBuilder:
         向量化处理撤单记录
         
         填充通道: 13-14
+        R3.2: 使用标准列名 Price/Qty/BuyOrderNO/SellOrderNO
         """
         if is_polars_df(df):
             df_cancel = df.filter(pl.col('ExecType') == '52')
-            prices = df_cancel['LastPx'].to_numpy()
-            qtys = df_cancel['LastQty'].to_numpy()
-            bid_seqs = df_cancel['BidApplSeqNum'].to_numpy()
-            offer_seqs = df_cancel['OfferApplSeqNum'].to_numpy()
+            prices = df_cancel['Price'].to_numpy()
+            qtys = df_cancel['Qty'].to_numpy()
+            bid_seqs = df_cancel['BuyOrderNO'].to_numpy()
+            offer_seqs = df_cancel['SellOrderNO'].to_numpy()
         else:
             df_cancel = df[df['ExecType'] == '52']
-            prices = df_cancel['LastPx'].values
-            qtys = df_cancel['LastQty'].values
-            bid_seqs = df_cancel['BidApplSeqNum'].values
-            offer_seqs = df_cancel['OfferApplSeqNum'].values
+            prices = df_cancel['Price'].values
+            qtys = df_cancel['Qty'].values
+            bid_seqs = df_cancel['BuyOrderNO'].values
+            offer_seqs = df_cancel['SellOrderNO'].values
         
         if len(prices) == 0:
             return
@@ -482,7 +488,7 @@ class SZImageBuilder:
         price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
         qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
         
-        # 通道13: 撤买 (BidSeq > 0 且 OfferSeq == 0)
+        # 通道13: 撤买 (BuyOrderNO > 0 且 SellOrderNO == 0)
         cancel_buy_mask = (bid_seqs > 0) & (offer_seqs == 0)
         if cancel_buy_mask.any():
             np.add.at(
@@ -490,7 +496,7 @@ class SZImageBuilder:
                 (price_bins[cancel_buy_mask], qty_bins[cancel_buy_mask]), 1
             )
         
-        # 通道14: 撤卖 (OfferSeq > 0 且 BidSeq == 0)
+        # 通道14: 撤卖 (SellOrderNO > 0 且 BuyOrderNO == 0)
         cancel_sell_mask = (offer_seqs > 0) & (bid_seqs == 0)
         if cancel_sell_mask.any():
             np.add.at(
@@ -508,6 +514,7 @@ class SZImageBuilder:
         
         v3: 使用 ActiveSeqs 互斥分流
         填充通道: 7-8, 9-12
+        R3.2: 使用标准列名 Price/Qty/BizIndex
         
         互斥规则:
         - Ch7 = Ch9 + Ch11
@@ -515,21 +522,13 @@ class SZImageBuilder:
         """
         if is_polars_df(df):
             prices = df['Price'].to_numpy()
-            # v3: 支持归一化后的 Qty 字段
-            if 'Qty' in df.columns:
-                qtys = df['Qty'].to_numpy()
-            else:
-                qtys = df['OrderQty'].to_numpy()
-            appl_seqs = df['ApplSeqNum'].to_numpy()
+            qtys = df['Qty'].to_numpy()
+            appl_seqs = df['BizIndex'].to_numpy()
             sides = df['Side'].to_numpy()
         else:
             prices = df['Price'].values
-            # v3: 支持归一化后的 Qty 字段
-            if 'Qty' in df.columns:
-                qtys = df['Qty'].values
-            else:
-                qtys = df['OrderQty'].values
-            appl_seqs = df['ApplSeqNum'].values
+            qtys = df['Qty'].values
+            appl_seqs = df['BizIndex'].values
             sides = df['Side'].values
         
         if len(prices) == 0:

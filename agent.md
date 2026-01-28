@@ -6,8 +6,8 @@
 
 - **项目名称**: L2 Image Builder (Level2 数据图像化处理)
 - **创建日期**: 2026-01-21
-- **最后更新**: 2026-01-26 (沪深一致性修复：时间过滤14:57、字段名Qty统一)
-- **当前状态**: 开发中
+- **最后更新**: 2026-01-28 (R3.2+: 下游模块标准列名适配完成，全链路测试通过)
+- **当前状态**: 开发中 → **可运行**
 - **目标**: 将 Level2 逐笔成交与逐笔委托数据转换为 `[15, 8, 8]` 三维图像格式
 - **执行环境**: conda中的 torch1010
 ---
@@ -22,10 +22,10 @@
 | config.py | Channels 常量类 | ✅ **v3增强** | 2026-01-26 | **R3.2: v3文档，validate_constraints()** |
 | polars_utils.py | Polars/Pandas 互操作 | ✅ 增强 | 2026-01-21 | Prompt 1.2: 懒加载、批量处理 |
 | sh_loader.py | 上交所数据加载 | ✅ **v3增强** | 2026-01-26 | **R3.1: v3字段验证，主动/被动筛选方法** |
-| sz_loader.py | 深交所数据加载 | ✅ **v3增强** | 2026-01-26 | **R3.1: 字段归一化(OrderQty→Qty)，向量化build_active_seqs** |
+| sz_loader.py | 深交所数据加载 | ✅ **R3.2完成** | 2026-01-27 | **R3.2: 通联原始格式→标准格式归一化，TickBSFlag派生** |
 | time_filter.py | 时间过滤 | ✅ 增强 | 2026-01-21 | Prompt 1.3: Polars 向量化 |
 | anomaly_filter.py | 异常值过滤 | ✅ 增强 | 2026-01-21 | Prompt 1.3: 撤单专用过滤 |
-| sz_cancel_enricher.py | 深交所撤单价格关联 | ✅ 增强 | 2026-01-21 | Prompt 2.3: 分离撤买/撤卖、缓存 |
+| sz_cancel_enricher.py | 深交所撤单价格关联 | ✅ **R3.2完成** | 2026-01-27 | **Prompt 2.3 + R3.2: 分离撤买/撤卖、标准列名适配** |
 | data_cleaner.py | 数据清洗整合类 | ✅ 新增 | 2026-01-21 | Prompt 1.3: DataCleaner |
 
 ### Phase 2: 核心计算层
@@ -44,7 +44,7 @@
 | image_builder.py | 15 通道图像构建 | ✅ 增强 | 2026-01-21 | Prompt 3.3: 统一入口 build_single_stock |
 | normalizer.py | Log1p + Max 归一化 | ✅ 完成 | 2026-01-21 | 通道内归一化、ImageNormalizer 类 |
 | sh_builder.py | 上交所图像构建器 | ✅ **v3重构** | 2026-01-26 | **R1.1: 意图导向重构，Ch9/10从委托表填充** |
-| sz_builder.py | 深交所图像构建器 | ✅ **v3重构** | 2026-01-26 | **R1.2: 意图导向重构，ActiveSeqs互斥分流** |
+| sz_builder.py | 深交所图像构建器 | ✅ **R3.2完成** | 2026-01-27 | **R1.2+R3.2: 意图导向重构 + 标准列名适配** |
 
 ### Phase 4: 存储与输出层
 
@@ -88,9 +88,21 @@
 | test_integration_builder.py | v3修复 | ✅ 更新 | 2026-01-26 | R2.2: 测试fixtures添加v3字段 |
 | test_sh_builder.py | v3修复 | ✅ 更新 | 2026-01-26 | R2.2: 所有内联DataFrame添加IsAggressive |
 | sh_loader.py | v3字段 | ✅ **完成** | 2026-01-26 | **R3.1: v3字段验证，辅助方法** |
-| sz_loader.py | v3字段 | ✅ **完成** | 2026-01-26 | **R3.1: 字段归一化，向量化优化** |
+| sz_loader.py | v3字段 | ✅ **R3.2完成** | 2026-01-27 | **R3.2: 通联原始→标准格式归一化** |
 | config.py | v3配置 | ✅ **完成** | 2026-01-26 | **R3.2: Channels v3文档，Config v3特性开关** |
 | big_order.py | v3文档 | ✅ **完成** | 2026-01-26 | **R3.2: 阈值计算适用场景说明** |
+
+### Phase 7: R3.2 深交所数据加载器重构
+
+| 模块 | 功能 | 状态 | 实现日期 | 说明 |
+|------|------|------|----------|------|
+| sz_loader.py | 列名映射常量 | ✅ 完成 | 2026-01-27 | TRADE_COLUMN_RENAME_MAP, ORDER_COLUMN_RENAME_MAP |
+| sz_loader.py | 成交表归一化 | ✅ 完成 | 2026-01-27 | _normalize_trade_columns() + TickBSFlag派生 |
+| sz_loader.py | 委托表归一化 | ✅ 完成 | 2026-01-27 | _normalize_order_columns() 更新 |
+| sz_builder.py | 标准列名适配 | ✅ 完成 | 2026-01-27 | 所有方法使用BuyOrderNO/SellOrderNO/Price/Qty/BizIndex |
+| sz_cancel_enricher.py | 标准列名适配 | ✅ 完成 | 2026-01-27 | enrich_sz_cancel_price_polars/pandas 使用标准列名 |
+| test_sz_normalization.py | 归一化测试 | ✅ 通过 | 2026-01-27 | 验证所有标准列名和TickBSFlag派生 |
+| test_sz_image_build.py | 集成测试 | ✅ 通过 | 2026-01-27 | 完整热力图构建测试(15,8,8) |
 
 ---
 
@@ -189,17 +201,43 @@ def batch_load_stocks(filepath: str, stock_codes: List[str], batch_size: int = 5
 ```
 
 class SZDataLoader:
-    """深交所数据加载器（R3.1 v3增强）"""
-    def __init__(self, raw_data_dir: str, use_polars: bool = True)
-    def load_trade(self, date: str, ...) -> DataFrame
-    def load_order(self, date: str, normalize_columns: bool = True, ...) -> DataFrame  # R3.1: 字段归一化
-    def load_order_lazy(self, date: str, normalize_columns: bool = True, ...) -> LazyFrame  # R3.1: 懒加载归一化
-    def enrich_cancel_price(self, trade_df, order_df) -> DataFrame
-    def build_active_seqs(self, trade_df) -> Dict[str, Set[int]]  # R3.1: 向量化优化
-    def build_active_seqs_fast(self, trade_df) -> Dict[str, Set[int]]  # R3.1: build_active_seqs内部调用
+    """深交所数据加载器（R3.2 通联原始→标准格式）"""
     
-    # R3.1 新增: 字段归一化
-    def _normalize_order_columns(self, df) -> DataFrame  # OrderQty -> Qty
+    # R3.2 列名映射常量
+    TRADE_COLUMN_RENAME_MAP = {
+        'TransactTime': 'TickTime',
+        'LastPx': 'Price',
+        'LastQty': 'Qty',
+        'BidApplSeqNum': 'BuyOrderNO',
+        'OfferApplSeqNum': 'SellOrderNO',
+        'ApplSeqNum': 'BizIndex',
+    }
+    
+    ORDER_COLUMN_RENAME_MAP = {
+        'TransactTime': 'TickTime',
+        'OrderQty': 'Qty',
+        'ApplSeqNum': 'BizIndex',
+    }
+    
+    def __init__(self, raw_data_dir: str, use_polars: bool = True)
+    def load_trade(self, date: str, normalize_columns: bool = True, ...) -> DataFrame
+    def load_order(self, date: str, normalize_columns: bool = True, ...) -> DataFrame
+    def load_order_lazy(self, date: str, normalize_columns: bool = True, ...) -> LazyFrame
+    def enrich_cancel_price(self, trade_df, order_df) -> DataFrame
+    def build_active_seqs(self, trade_df) -> Dict[str, Set[int]]
+    def build_active_seqs_fast(self, trade_df) -> Dict[str, Set[int]]
+    
+    # R3.2 新增: 列名归一化方法
+    def _normalize_trade_columns(self, df) -> DataFrame
+        """
+        归一化成交表列名并派生 TickBSFlag:
+        - BuyOrderNO > SellOrderNO → 'B' (主动买)
+        - SellOrderNO > BuyOrderNO → 'S' (主动卖)
+        - else → 'N' (未知/集合竞价)
+        """
+    
+    def _normalize_order_columns(self, df) -> DataFrame
+        """归一化委托表列名: OrderQty → Qty"""
 ```
 
 ```python
@@ -1286,6 +1324,239 @@ def build_l2_image_with_stats(stock_code, df_trade, df_order,
 2. ✅ ~~**Prompt R1.2**: 深交所图像构建器v3重构~~
 3. ✅ ~~**Prompt R2.1**: 诊断报告器增强（v3约束验证）~~
 4. ✅ ~~**Prompt R2.2**: 图像构建入口更新~~
-5. ⏳ **Prompt R3.1**: 数据加载器适配（BizIndex/IsAggressive）
-6. ⏳ **Prompt R3.2**: 配置与常量更新
+5. ✅ ~~**Prompt R3.1**: 上交所数据加载器适配（BidOrdID→BuyOrderNO, ActiveSide→TickBSFlag）~~
+6. ✅ ~~**Prompt R3.2**: 深交所数据加载器适配（原始通联格式→标准格式）~~
 7. **Prompt 5.2**: 监控告警与增量更新（可选）
+
+---
+
+## 📜 变更日志
+
+### [2026-01-27] - Prompt R3.2 深交所数据加载器重构（通联原始→标准格式）
+
+**实现目标:**
+将深交所通联原始 Parquet 格式归一化为 l2_image_builder 标准格式，确保下游模块（sz_builder.py, sz_cancel_enricher.py）无需关心原始数据格式差异。
+
+**核心变更:**
+
+1. **sz_loader.py 新增列名映射常量**:
+   ```python
+   TRADE_COLUMN_RENAME_MAP = {
+       'TransactTime': 'TickTime',
+       'LastPx': 'Price',
+       'LastQty': 'Qty',
+       'BidApplSeqNum': 'BuyOrderNO',
+       'OfferApplSeqNum': 'SellOrderNO',
+       'ApplSeqNum': 'BizIndex',
+   }
+   
+   ORDER_COLUMN_RENAME_MAP = {
+       'TransactTime': 'TickTime',
+       'OrderQty': 'Qty',
+       'ApplSeqNum': 'BizIndex',
+   }
+   ```
+
+2. **sz_loader.py 新增 `_normalize_trade_columns()` 方法**:
+   - 功能: 归一化成交表列名并派生 TickBSFlag
+   - TickBSFlag 派生逻辑:
+     - `BuyOrderNO > SellOrderNO` → 'B' (主动买)
+     - `SellOrderNO > BuyOrderNO` → 'S' (主动卖)
+     - 其他 → 'N' (未知/集合竞价)
+   - 实现: 支持 Polars 和 Pandas 两种引擎
+
+3. **sz_loader.py 更新 `_normalize_order_columns()` 方法**:
+   - 原有功能: OrderQty → Qty
+   - 新增: 应用 ORDER_COLUMN_RENAME_MAP 进行完整列名归一化
+
+4. **sz_loader.py 更新 `load_trade()` 和 `load_order()` 方法**:
+   - 新增 `normalize_columns` 参数（默认 True）
+   - 加载后自动调用相应的归一化方法
+
+5. **sz_builder.py 标准列名适配**:
+   - 所有方法更新为使用标准列名:
+     - `BidApplSeqNum` → `BuyOrderNO`
+     - `OfferApplSeqNum` → `SellOrderNO`
+     - `LastPx` → `Price`
+     - `LastQty` → `Qty`
+     - `ApplSeqNum` → `BizIndex`
+   - 受影响方法:
+     - `_build_active_seqs()` / `_build_active_seqs_vectorized()`
+     - `_process_trades()` / `_process_trades_vectorized()`
+     - `_process_cancels()` / `_process_cancels_vectorized()`
+     - `_process_orders()` / `_process_orders_vectorized()`
+
+6. **sz_cancel_enricher.py 标准列名适配**:
+   - `enrich_sz_cancel_price_polars()`: 使用 BuyOrderNO/SellOrderNO/Price/BizIndex/TickTime
+   - `enrich_sz_cancel_price_pandas()`: 使用标准列名
+   - 撤单关联逻辑保持不变（通过委托序列号匹配）
+
+**验证测试:**
+
+1. **test_sz_normalization.py** - 列名归一化测试:
+   ```
+   成交表: 18,453,108 行
+   ✅ TickTime, Price, Qty, BuyOrderNO, SellOrderNO, BizIndex
+   ✅ TickBSFlag 派生正确:
+      - B (主动买): 8,728,424 条
+      - S (主动卖): 9,724,684 条
+      - N (未知): 0 条
+   
+   委托表: 18,313,180 行
+   ✅ TickTime, Price, Qty, BizIndex, Side
+   ```
+
+2. **test_sz_image_build.py** - 集成测试:
+   ```
+   数据加载: 18,490,049 条成交 + 18,377,297 条委托
+   股票 000001 测试:
+   - 成交: 4,739 条
+   - 委托: 4,659 条
+   ✅ 热力图构建成功: (15, 8, 8)
+   ✅ 所有通道正常填充
+   ```
+
+**架构影响:**
+
+| 层级 | 变更内容 | 影响范围 |
+|------|---------|---------|
+| **Loader 层** | 自动归一化列名，输出标准格式 | sz_loader.py |
+| **Builder 层** | 使用标准列名处理数据 | sz_builder.py |
+| **Enricher 层** | 使用标准列名补全撤单价格 | sz_cancel_enricher.py |
+| **下游影响** | 无需修改，接收标准格式 | main.py, diagnostics, dataset |
+
+**技术约束更新:**
+
+| 约束项 | R3.2 后规范 |
+|--------|------------|
+| 深交所成交表字段 | TickTime, Price, Qty, BuyOrderNO, SellOrderNO, BizIndex, TickBSFlag, ExecType |
+| 深交所委托表字段 | TickTime, Price, Qty, BizIndex, Side, OrdType |
+| TickBSFlag 语义 | 'B'=主动买, 'S'=主动卖, 'N'=未知 |
+| 列名归一化时机 | Loader 层输出前（默认开启） |
+
+**交付产物:**
+1. ✅ 修改后的 `l2_image_builder/data_loader/sz_loader.py`
+2. ✅ 修改后的 `l2_image_builder/builder/sz_builder.py`
+3. ✅ 修改后的 `l2_image_builder/cleaner/sz_cancel_enricher.py`
+4. ✅ 测试脚本 `test_sz_normalization.py`
+5. ✅ 集成测试 `test_sz_image_build.py`
+6. ✅ 更新的 `L2_Image_Builder_SZ_Loader_Refactor_Plan.md` (验证结果记录)
+7. ✅ 更新的 `agent.md` (本文档)
+
+**后续建议:**
+- 考虑在 config.py 添加 `normalize_columns` 全局开关（当前默认 True）
+- 可选: 添加单元测试覆盖 Lazy 模式的归一化逻辑
+- 可选: 性能测试对比归一化前后的处理速度
+
+---
+
+### [2026-01-28] - 数据测试与上交所加载器修复
+
+**测试结果:**
+- ✅ **上交所数据分解** (sh_tick_reconstruction): 成功处理 3731 只股票
+  - 委托记录: 5,857,584 条
+  - 成交记录: 2,986,187 条
+  - 处理耗时: 761.60 秒
+- ✅ **上交所热力图构建**: 成功（修复列名映射后）
+- ✅ **深交所数据**: R3.2 完成，已支持通联原始格式自动转换
+
+**上交所加载器修复 (sh_loader.py):**
+
+1. **列名兼容处理**:
+   - `BidOrdID` → `BuyOrderNO`
+   - `AskOrdID` → `SellOrderNO`
+
+2. **TickBSFlag 字段生成**:
+   - 根据 `ActiveSide` 自动生成 `TickBSFlag`
+   - ActiveSide=1 → TickBSFlag='B' (主动买)
+   - ActiveSide=2 → TickBSFlag='S' (主动卖)
+   - ActiveSide=0 → TickBSFlag='N' (未知)
+
+3. **方法修改**:
+   - `_normalize_trade_columns()`: 即时加载版本
+   - `_normalize_trade_columns_lazy()`: 懒加载版本
+
+---
+### [2026-01-28] - R3.2+ 下游模块标准列名适配（全链路测试通过）
+
+**问题发现:**
+R3.2 完成 sz_loader.py 归一化后，下游模块 (data_cleaner.py, quantile.py, big_order.py) 仍使用原始通联列名，导致全链路测试失败。
+
+**修复内容:**
+
+1. **cleaner/data_cleaner.py** - COLUMN_CONFIG 更新:
+   ```python
+   # R3.2 前（原始通联列名）
+   "sz_order": {"time_column": "TransactTime", "price_column": "LastPx", "qty_column": "LastQty"}
+   "sz_trade": {"time_column": "TransactTime", "price_column": "LastPx", "qty_column": "LastQty"}
+   
+   # R3.2 后（标准列名）
+   "sz_order": {"time_column": "TickTime", "price_column": "Price", "qty_column": "Qty"}
+   "sz_trade": {"time_column": "TickTime", "price_column": "Price", "qty_column": "Qty"}
+   ```
+
+2. **calculator/quantile.py** - 深交所分位数计算:
+   - `compute_for_sz()`: 参数改为标准列名 (Price, Qty)
+   - `compute_quantile_bins_sz_polars()`: `LastPx` → `Price`, `LastQty`/`OrderQty` → `Qty`
+   - `compute_quantile_bins_sz_pandas()`: 同上
+
+3. **calculator/big_order.py** - 深交所母单还原:
+   - `_restore_parent_orders_sz()`: 使用 `Price*Qty` 代替 `LastPx*LastQty`
+   - `restore_parent_orders_sz_polars()`: 使用 `BuyOrderNO/SellOrderNO` 代替 `BidApplSeqNum/OfferApplSeqNum`
+   - `restore_parent_orders_sz_pandas()`: 同上
+
+**全链路测试结果 (test_full_day_pipeline.py):**
+```
+============================================================
+测试 l2_image_builder 完整流程
+============================================================
+✅ 配置加载成功
+✅ 深交所成交数据: 18,490,049 行
+✅ 深交所委托数据: 18,377,297 行
+✅ 上交所成交数据: 2,986,187 行
+✅ 上交所委托数据: 5,857,584 行
+✅ 深交所成交清洗后: 18,453,108 行
+✅ 深交所委托清洗后: 18,313,180 行
+✅ 上交所成交清洗后: 2,986,187 行
+✅ 上交所委托清洗后: 5,857,584 行
+✅ 撤单价格补全成功: 000001, 4737 行
+✅ 深交所价格分位数: [ 0.   11.18 11.38 11.39 11.41 11.43 11.45]
+✅ 深交所数量分位数: [ 100.  300.  500. 1000. 1300. 2400. 5500.]
+✅ 深交所阈值: 116067.78
+✅ 买方母单数: 1296, 卖方母单数: 1422
+✅ 图像构建成功: shape=(15, 8, 8)
+✅ v3通道约束验证通过: Ch7=Ch9+Ch11, Ch8=Ch10+Ch12
+✅ 归一化成功: shape=(15, 8, 8)
+✅ 统一入口构建成功: shape=(15, 8, 8)
+
+各通道统计:
+  Ch 0 全部成交: sum=2582, nonzero=43/64
+  Ch 1 主动买入: sum=1126, nonzero=36/64
+  Ch 2 主动卖出: sum=1456, nonzero=42/64
+  Ch 7 买单:     sum=2440, nonzero=49/64
+  Ch 8 卖单:     sum=2219, nonzero=42/64
+  Ch 9 主动买入委托: sum=330, nonzero=33/64
+  Ch11 非主动买入: sum=2110, nonzero=49/64
+  
+============================================================
+✅ 所有测试通过！一天数据可以正常处理
+============================================================
+```
+
+**修改文件汇总:**
+
+| 文件 | 修改内容 | 原因 |
+|------|---------|------|
+| `cleaner/data_cleaner.py` | COLUMN_CONFIG 使用标准列名 | 时间过滤报错 "TransactTime not found" |
+| `calculator/quantile.py` | compute_for_sz, sz_polars, sz_pandas | 分位数计算报错 "LastPx" |
+| `calculator/big_order.py` | _restore_parent_orders_sz, sz_polars, sz_pandas | 母单还原报错 "LastPx" |
+
+**技术说明:**
+R3.2 在 sz_loader.py 完成列名归一化后，所有下游模块必须使用标准列名：
+- 时间: `TickTime` (原 `TransactTime`)
+- 价格: `Price` (原 `LastPx`)
+- 数量: `Qty` (原 `LastQty`, `OrderQty`)
+- 买方序号: `BuyOrderNO` (原 `BidApplSeqNum`)
+- 卖方序号: `SellOrderNO` (原 `OfferApplSeqNum`)
+
+---

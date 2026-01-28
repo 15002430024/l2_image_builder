@@ -67,6 +67,24 @@ TRADE_COLUMNS_FOR_ACTIVE_SEQS = [
     "SecurityID", "BidApplSeqNum", "OfferApplSeqNum", "ExecType"
 ]
 
+# ==================== R3.2 成交表列名映射 ====================
+# 通联原始字段 -> 系统标准字段
+TRADE_COLUMN_RENAME_MAP = {
+    'TransactTime': 'TickTime',
+    'LastPx': 'Price',
+    'LastQty': 'Qty',
+    'BidApplSeqNum': 'BuyOrderNO',
+    'OfferApplSeqNum': 'SellOrderNO',
+    'ApplSeqNum': 'BizIndex',
+}
+
+# 委托表列名映射（补充）
+ORDER_COLUMN_RENAME_MAP = {
+    'TransactTime': 'TickTime',
+    'OrderQty': 'Qty',
+    'ApplSeqNum': 'BizIndex',
+}
+
 
 class SZDataLoader:
     """
@@ -169,9 +187,12 @@ class SZDataLoader:
         time_filter: Optional[bool] = None,
         time_ranges: Optional[List[Tuple[int, int]]] = None,
         minimal_columns: bool = False,
+        normalize_columns: bool = True,
     ) -> DataFrame:
         """
         加载深交所成交数据
+        
+        R3.2 更新：自动进行列名归一化，输出标准字段。
         
         Args:
             date: 日期字符串
@@ -179,9 +200,10 @@ class SZDataLoader:
             time_filter: 是否进行时间过滤，None 使用默认设置
             time_ranges: 时间范围
             minimal_columns: 是否只加载构建 Image 所需的最小列
+            normalize_columns: 是否归一化列名（默认 True）
         
         Returns:
-            成交数据 DataFrame (包含成交和撤单)
+            成交数据 DataFrame (包含成交和撤单，列名已归一化)
         """
         filepath = self.get_trade_path(date)
         
@@ -198,13 +220,18 @@ class SZDataLoader:
             use_polars=self.use_polars,
         )
         
-        # 确定是否进行时间过滤
+        # R3.2: 列名归一化（通联原始 -> 系统标准）
+        if normalize_columns:
+            df = self._normalize_trade_columns(df)
+        
+        # 确定是否进行时间过滤（使用归一化后的列名）
         do_time_filter = time_filter if time_filter is not None else self.default_time_filter
         
-        # 时间过滤
         if do_time_filter:
             ranges = time_ranges if time_ranges is not None else DEFAULT_TIME_RANGES
-            df = filter_time_range(df, "TransactTime", ranges)
+            # 检测时间列名（归一化后为 TickTime，否则为 TransactTime）
+            time_col = "TickTime" if normalize_columns and "TickTime" in (df.columns if is_polars_df(df) else df.columns.tolist()) else "TransactTime"
+            df = filter_time_range(df, time_col, ranges)
         
         return df
     
@@ -255,10 +282,12 @@ class SZDataLoader:
         # 确定是否进行时间过滤
         do_time_filter = time_filter if time_filter is not None else self.default_time_filter
         
-        # 时间过滤
+        # 时间过滤（使用归一化后的列名）
         if do_time_filter:
             ranges = time_ranges if time_ranges is not None else DEFAULT_TIME_RANGES
-            df = filter_time_range(df, "TransactTime", ranges)
+            # 检测时间列名（归一化后为 TickTime，否则为 TransactTime）
+            time_col = "TickTime" if normalize_columns and "TickTime" in (df.columns if is_polars_df(df) else df.columns.tolist()) else "TransactTime"
+            df = filter_time_range(df, time_col, ranges)
         
         # 过滤异常值（使用归一化后的列名）
         qty_col = "Qty" if normalize_columns and "Qty" in (df.columns if is_polars_df(df) else df.columns.tolist()) else "OrderQty"
@@ -271,6 +300,7 @@ class SZDataLoader:
         归一化委托表列名
         
         v3 要求：OrderQty -> Qty，确保沪深 Loader 输出列名统一。
+        R3.2: 完整映射 TransactTime -> TickTime, ApplSeqNum -> BizIndex
         
         Args:
             df: 原始委托数据
@@ -280,14 +310,94 @@ class SZDataLoader:
         """
         if is_polars_df(df):
             cols = df.columns
-            if 'OrderQty' in cols and 'Qty' not in cols:
-                df = df.rename({'OrderQty': 'Qty'})
-                logger.debug("深交所委托表: OrderQty -> Qty 列名归一化")
+            rename_dict = {}
+            for old, new in ORDER_COLUMN_RENAME_MAP.items():
+                if old in cols and new not in cols:
+                    rename_dict[old] = new
+            if rename_dict:
+                df = df.rename(rename_dict)
+                logger.debug(f"深交所委托表列名归一化: {rename_dict}")
         else:
             cols = df.columns.tolist()
-            if 'OrderQty' in cols and 'Qty' not in cols:
-                df = df.rename(columns={'OrderQty': 'Qty'})
-                logger.debug("深交所委托表: OrderQty -> Qty 列名归一化")
+            rename_dict = {}
+            for old, new in ORDER_COLUMN_RENAME_MAP.items():
+                if old in cols and new not in cols:
+                    rename_dict[old] = new
+            if rename_dict:
+                df = df.rename(columns=rename_dict)
+                logger.debug(f"深交所委托表列名归一化: {rename_dict}")
+        
+        return df
+    
+    def _normalize_trade_columns(self, df: DataFrame) -> DataFrame:
+        """
+        R3.2: 归一化成交表列名
+        
+        将通联原始字段映射为系统标准字段：
+        - TransactTime -> TickTime
+        - LastPx -> Price
+        - LastQty -> Qty
+        - BidApplSeqNum -> BuyOrderNO
+        - OfferApplSeqNum -> SellOrderNO
+        - ApplSeqNum -> BizIndex
+        
+        同时派生 TickBSFlag 字段（深交所主动性标识）
+        
+        Args:
+            df: 原始成交数据
+        
+        Returns:
+            列名归一化后的 DataFrame（含 TickBSFlag）
+        """
+        if is_polars_df(df):
+            cols = df.columns
+            rename_dict = {}
+            for old, new in TRADE_COLUMN_RENAME_MAP.items():
+                if old in cols and new not in cols:
+                    rename_dict[old] = new
+            
+            if rename_dict:
+                df = df.rename(rename_dict)
+                logger.debug(f"深交所成交表列名归一化: {rename_dict}")
+            
+            # 派生 TickBSFlag（深交所：SeqNum 较大者为主动方）
+            # 必须在重命名后操作，使用新列名
+            new_cols = df.columns
+            buy_col = 'BuyOrderNO' if 'BuyOrderNO' in new_cols else 'BidApplSeqNum'
+            sell_col = 'SellOrderNO' if 'SellOrderNO' in new_cols else 'OfferApplSeqNum'
+            
+            if 'TickBSFlag' not in new_cols and buy_col in new_cols and sell_col in new_cols:
+                df = df.with_columns(
+                    pl.when(pl.col(buy_col) > pl.col(sell_col))
+                    .then(pl.lit('B'))
+                    .when(pl.col(sell_col) > pl.col(buy_col))
+                    .then(pl.lit('S'))
+                    .otherwise(pl.lit('N'))
+                    .alias('TickBSFlag')
+                )
+                logger.debug("深交所成交表: 派生 TickBSFlag 字段")
+        else:
+            cols = df.columns.tolist()
+            rename_dict = {}
+            for old, new in TRADE_COLUMN_RENAME_MAP.items():
+                if old in cols and new not in cols:
+                    rename_dict[old] = new
+            
+            if rename_dict:
+                df = df.rename(columns=rename_dict)
+                logger.debug(f"深交所成交表列名归一化: {rename_dict}")
+            
+            # 派生 TickBSFlag
+            new_cols = df.columns.tolist()
+            buy_col = 'BuyOrderNO' if 'BuyOrderNO' in new_cols else 'BidApplSeqNum'
+            sell_col = 'SellOrderNO' if 'SellOrderNO' in new_cols else 'OfferApplSeqNum'
+            
+            if 'TickBSFlag' not in new_cols and buy_col in new_cols and sell_col in new_cols:
+                df = df.copy()
+                df['TickBSFlag'] = 'N'
+                df.loc[df[buy_col] > df[sell_col], 'TickBSFlag'] = 'B'
+                df.loc[df[sell_col] > df[buy_col], 'TickBSFlag'] = 'S'
+                logger.debug("深交所成交表: 派生 TickBSFlag 字段")
         
         return df
     
