@@ -22,6 +22,10 @@ from ..calculator.quantile import (
     compute_quantile_bins_sz_polars,
     compute_quantile_bins_sh_pandas,
     compute_quantile_bins_sz_pandas,
+    compute_separate_quantile_bins_sh_polars,
+    compute_separate_quantile_bins_sh_pandas,
+    compute_separate_quantile_bins_sz_polars,
+    compute_separate_quantile_bins_sz_pandas,
 )
 from ..calculator.big_order import BigOrderCalculator, compute_all
 from ..cleaner.sz_cancel_enricher import enrich_sz_cancel_price
@@ -482,16 +486,38 @@ class Level2ImageBuilder:
                 )
         
         # 1. 计算分位数
-        if self._is_sh:
-            if is_polars:
-                price_bins, qty_bins = compute_quantile_bins_sh_polars(df_trade, df_order)
+        # 根据配置选择分离或联合模式
+        if self.config.separate_quantile_bins:
+            # 分离模式：成交和委托独立计算分位数
+            if self._is_sh:
+                if is_polars:
+                    tp_bins, tq_bins, op_bins, oq_bins = compute_separate_quantile_bins_sh_polars(df_trade, df_order)
+                else:
+                    tp_bins, tq_bins, op_bins, oq_bins = compute_separate_quantile_bins_sh_pandas(df_trade, df_order)
             else:
-                price_bins, qty_bins = compute_quantile_bins_sh_pandas(df_trade, df_order)
+                if is_polars:
+                    tp_bins, tq_bins, op_bins, oq_bins = compute_separate_quantile_bins_sz_polars(df_trade, df_order)
+                else:
+                    tp_bins, tq_bins, op_bins, oq_bins = compute_separate_quantile_bins_sz_pandas(df_trade, df_order)
+            
+            trade_price_bins, trade_qty_bins = tp_bins, tq_bins
+            order_price_bins, order_qty_bins = op_bins, oq_bins
         else:
-            if is_polars:
-                price_bins, qty_bins = compute_quantile_bins_sz_polars(df_trade, df_order)
+            # 联合模式：成交+委托统一分位数（原有逻辑）
+            if self._is_sh:
+                if is_polars:
+                    price_bins, qty_bins = compute_quantile_bins_sh_polars(df_trade, df_order)
+                else:
+                    price_bins, qty_bins = compute_quantile_bins_sh_pandas(df_trade, df_order)
             else:
-                price_bins, qty_bins = compute_quantile_bins_sz_pandas(df_trade, df_order)
+                if is_polars:
+                    price_bins, qty_bins = compute_quantile_bins_sz_polars(df_trade, df_order)
+                else:
+                    price_bins, qty_bins = compute_quantile_bins_sz_pandas(df_trade, df_order)
+            
+            # 联合模式下，成交和委托使用相同的分位数
+            trade_price_bins = order_price_bins = price_bins
+            trade_qty_bins = order_qty_bins = qty_bins
         
         # 2. 母单还原 + 当日阈值
         exchange = 'sh' if self._is_sh else 'sz'
@@ -503,8 +529,10 @@ class Level2ImageBuilder:
         if self._is_sh:
             # v3: 上交所使用 SHImageBuilder（内部使用 IsAggressive 字段）
             sh_builder = SHImageBuilder(
-                price_bins=price_bins,
-                qty_bins=qty_bins,
+                trade_price_bins=trade_price_bins,
+                trade_qty_bins=trade_qty_bins,
+                order_price_bins=order_price_bins,
+                order_qty_bins=order_qty_bins,
                 buy_parent=buy_parent,
                 sell_parent=sell_parent,
                 threshold=threshold,
@@ -519,8 +547,10 @@ class Level2ImageBuilder:
             
             # v3: 构建主动委托索引（SZImageBuilder 内部会自动构建）
             sz_builder = SZImageBuilder(
-                price_bins=price_bins,
-                qty_bins=qty_bins,
+                trade_price_bins=trade_price_bins,
+                trade_qty_bins=trade_qty_bins,
+                order_price_bins=order_price_bins,
+                order_qty_bins=order_qty_bins,
                 buy_parent=buy_parent,
                 sell_parent=sell_parent,
                 threshold=threshold,

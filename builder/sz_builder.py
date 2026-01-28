@@ -53,25 +53,40 @@ class SZImageBuilder:
         - 支持 Polars 和 Pandas DataFrame
         - 向量化实现，高性能
         - 主动方序列号集合构建（用于通道11/12判断）
+        - 支持分离分位数模式（成交/委托独立分位数）
     
     Args:
-        price_bins: 价格分位数边界 (7个值)
-        qty_bins: 数量分位数边界 (7个值)
+        trade_price_bins: 成交价格分位数边界 (7个值)
+        trade_qty_bins: 成交数量分位数边界 (7个值)
+        order_price_bins: 委托价格分位数边界 (7个值)
+        order_qty_bins: 委托数量分位数边界 (7个值)
         buy_parent: 买方母单金额映射 {BidApplSeqNum -> amount}
         sell_parent: 卖方母单金额映射 {OfferApplSeqNum -> amount}
         threshold: 大单阈值
+    
+    Note:
+        - 分离模式: trade_*_bins 用于成交通道(0-6), order_*_bins 用于委托/撤单通道(7-14)
+        - 撤单虽在Trade表但属于委托意图，故使用 order_*_bins
+        - 联合模式: 传入相同的 trade_*_bins 和 order_*_bins（兼容旧逻辑）
     """
     
     def __init__(
         self,
-        price_bins: np.ndarray,
-        qty_bins: np.ndarray,
+        trade_price_bins: np.ndarray,
+        trade_qty_bins: np.ndarray,
+        order_price_bins: np.ndarray,
+        order_qty_bins: np.ndarray,
         buy_parent: Dict[int, float],
         sell_parent: Dict[int, float],
         threshold: float,
     ):
-        self.price_bins = price_bins
-        self.qty_bins = qty_bins
+        # 成交表使用的分位数
+        self.trade_price_bins = trade_price_bins
+        self.trade_qty_bins = trade_qty_bins
+        # 委托表/撤单使用的分位数
+        self.order_price_bins = order_price_bins
+        self.order_qty_bins = order_qty_bins
+        
         self.buy_parent = buy_parent
         self.sell_parent = sell_parent
         self.threshold = threshold
@@ -228,8 +243,9 @@ class SZImageBuilder:
             if price <= 0:
                 continue
             
-            pb = np.clip(np.digitize(price, self.price_bins), 0, 7)
-            qb = np.clip(np.digitize(qty, self.qty_bins), 0, 7)
+            # 使用成交专用分位数
+            pb = np.clip(np.digitize(price, self.trade_price_bins), 0, 7)
+            qb = np.clip(np.digitize(qty, self.trade_qty_bins), 0, 7)
             
             bid_seq = row['BuyOrderNO']
             offer_seq = row['SellOrderNO']
@@ -264,7 +280,9 @@ class SZImageBuilder:
         填充通道: 13-14
         R3.2: 使用标准列名 Price/Qty/BuyOrderNO/SellOrderNO
         
-        注意：撤单的 Price 原始值为 0，需要预先关联委托表补全
+        注意：
+        - 撤单的 Price 原始值为 0，需要预先关联委托表补全
+        - 撤单属于委托意图，使用 order_*_bins 而非 trade_*_bins
         """
         if is_polars_df(df):
             df_cancel = df.filter(pl.col('ExecType') == '52')
@@ -280,8 +298,9 @@ class SZImageBuilder:
             if price <= 0:
                 continue
             
-            pb = np.clip(np.digitize(price, self.price_bins), 0, 7)
-            qb = np.clip(np.digitize(qty, self.qty_bins), 0, 7)
+            # 撤单使用委托专用分位数
+            pb = np.clip(np.digitize(price, self.order_price_bins), 0, 7)
+            qb = np.clip(np.digitize(qty, self.order_qty_bins), 0, 7)
             
             bid_seq = row['BuyOrderNO']
             offer_seq = row['SellOrderNO']
@@ -320,8 +339,9 @@ class SZImageBuilder:
             if price <= 0:
                 continue
             
-            pb = np.clip(np.digitize(price, self.price_bins), 0, 7)
-            qb = np.clip(np.digitize(qty, self.qty_bins), 0, 7)
+            # 使用委托专用分位数
+            pb = np.clip(np.digitize(price, self.order_price_bins), 0, 7)
+            qb = np.clip(np.digitize(qty, self.order_qty_bins), 0, 7)
             
             appl_seq = int(row['BizIndex'])
             side = row['Side']
@@ -376,8 +396,16 @@ class SZImageBuilder:
         if len(prices) == 0:
             return
         
-        # 过滤有效价格
-        valid_mask = prices > 0
+        # 处理撤单的 Price=0 情况（撤单无成交价，使用委托价格分位数最小边界作为占位）
+        # R3.3: 撤单属于委托意图撤回，Price字段为0是正常的
+        zero_price_mask = prices == 0
+        if zero_price_mask.any():
+            prices = prices.copy()
+            # 使用委托价格分位数的最小值作为占位价格
+            prices[zero_price_mask] = self.order_price_bins[0]
+        
+        # 仅过滤数量异常的记录
+        valid_mask = qtys > 0
         prices = prices[valid_mask]
         qtys = qtys[valid_mask]
         bid_seqs = bid_seqs[valid_mask]
@@ -386,9 +414,9 @@ class SZImageBuilder:
         if len(prices) == 0:
             return
         
-        # 计算 bin 索引
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 计算 bin 索引 - 使用成交专用分位数
+        price_bins = np.clip(np.digitize(prices, self.trade_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.trade_qty_bins), 0, 7)
         
         # 通道0: 全部成交
         np.add.at(self.image[Channels.ALL_TRADE], (price_bins, qty_bins), 1)
@@ -457,6 +485,8 @@ class SZImageBuilder:
         
         填充通道: 13-14
         R3.2: 使用标准列名 Price/Qty/BuyOrderNO/SellOrderNO
+        
+        注意：撤单属于委托意图，使用 order_*_bins 而非 trade_*_bins
         """
         if is_polars_df(df):
             df_cancel = df.filter(pl.col('ExecType') == '52')
@@ -474,8 +504,16 @@ class SZImageBuilder:
         if len(prices) == 0:
             return
         
-        # 过滤有效价格
-        valid_mask = prices > 0
+        # 处理撤单的 Price=0 情况（撤单无成交价，使用委托价格分位数最小边界作为占位）
+        # R3.3 Fix: 撤单属于委托意图撤回，Price字段为0是正常的
+        zero_price_mask = prices == 0
+        if zero_price_mask.any():
+            prices = prices.copy()
+            # 使用委托价格分位数的最小值作为占位价格
+            prices[zero_price_mask] = self.order_price_bins[0]
+        
+        # 仅过滤数量异常的记录
+        valid_mask = qtys > 0
         prices = prices[valid_mask]
         qtys = qtys[valid_mask]
         bid_seqs = bid_seqs[valid_mask]
@@ -484,9 +522,9 @@ class SZImageBuilder:
         if len(prices) == 0:
             return
         
-        # 计算 bin 索引
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 计算 bin 索引 - 撤单使用委托专用分位数
+        price_bins = np.clip(np.digitize(prices, self.order_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.order_qty_bins), 0, 7)
         
         # 通道13: 撤买 (BuyOrderNO > 0 且 SellOrderNO == 0)
         cancel_buy_mask = (bid_seqs > 0) & (offer_seqs == 0)
@@ -544,9 +582,9 @@ class SZImageBuilder:
         if len(prices) == 0:
             return
         
-        # 计算 bin 索引
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 计算 bin 索引 - 使用委托专用分位数
+        price_bins = np.clip(np.digitize(prices, self.order_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.order_qty_bins), 0, 7)
         
         # 买入委托 (Side='49')
         buy_mask = sides == '49'
@@ -718,8 +756,10 @@ class SZImageBuilder:
 def build_sz_image(
     df_trade: Union['pl.DataFrame', pd.DataFrame],
     df_order: Union['pl.DataFrame', pd.DataFrame],
-    price_bins: np.ndarray,
-    qty_bins: np.ndarray,
+    trade_price_bins: np.ndarray,
+    trade_qty_bins: np.ndarray,
+    order_price_bins: np.ndarray,
+    order_qty_bins: np.ndarray,
     buy_parent: Dict[int, float],
     sell_parent: Dict[int, float],
     threshold: float,
@@ -731,8 +771,10 @@ def build_sz_image(
     Args:
         df_trade: 成交表（包含成交和撤单）
         df_order: 委托表
-        price_bins: 价格分位数边界
-        qty_bins: 数量分位数边界
+        trade_price_bins: 成交价格分位数边界
+        trade_qty_bins: 成交数量分位数边界
+        order_price_bins: 委托价格分位数边界
+        order_qty_bins: 委托数量分位数边界
         buy_parent: 买方母单金额映射
         sell_parent: 卖方母单金额映射
         threshold: 大单阈值
@@ -742,8 +784,10 @@ def build_sz_image(
         [15, 8, 8] 图像
     """
     builder = SZImageBuilder(
-        price_bins=price_bins,
-        qty_bins=qty_bins,
+        trade_price_bins=trade_price_bins,
+        trade_qty_bins=trade_qty_bins,
+        order_price_bins=order_price_bins,
+        order_qty_bins=order_qty_bins,
         buy_parent=buy_parent,
         sell_parent=sell_parent,
         threshold=threshold,
@@ -758,8 +802,10 @@ def build_sz_image(
 def build_sz_image_with_stats(
     df_trade: Union['pl.DataFrame', pd.DataFrame],
     df_order: Union['pl.DataFrame', pd.DataFrame],
-    price_bins: np.ndarray,
-    qty_bins: np.ndarray,
+    trade_price_bins: np.ndarray,
+    trade_qty_bins: np.ndarray,
+    order_price_bins: np.ndarray,
+    order_qty_bins: np.ndarray,
     buy_parent: Dict[int, float],
     sell_parent: Dict[int, float],
     threshold: float,
@@ -772,8 +818,10 @@ def build_sz_image_with_stats(
         (image, channel_stats, consistency_check)
     """
     builder = SZImageBuilder(
-        price_bins=price_bins,
-        qty_bins=qty_bins,
+        trade_price_bins=trade_price_bins,
+        trade_qty_bins=trade_qty_bins,
+        order_price_bins=order_price_bins,
+        order_qty_bins=order_qty_bins,
         buy_parent=buy_parent,
         sell_parent=sell_parent,
         threshold=threshold,
@@ -794,21 +842,22 @@ def build_active_seqs_from_trade(
     从成交表构建主动方序列号集合
     
     用于判断委托是否作为主动方成交
+    R3.2: 使用标准列名 BuyOrderNO/SellOrderNO
     
     Args:
         df_trade: 成交表
     
     Returns:
-        {'buy': set of BidApplSeqNum, 'sell': set of OfferApplSeqNum}
+        {'buy': set of BuyOrderNO, 'sell': set of SellOrderNO}
     """
     if is_polars_df(df_trade):
         df_exec = df_trade.filter(pl.col('ExecType') == '70')
-        bid_seqs = df_exec['BidApplSeqNum'].to_numpy()
-        offer_seqs = df_exec['OfferApplSeqNum'].to_numpy()
+        bid_seqs = df_exec['BuyOrderNO'].to_numpy()
+        offer_seqs = df_exec['SellOrderNO'].to_numpy()
     else:
         df_exec = df_trade[df_trade['ExecType'] == '70']
-        bid_seqs = df_exec['BidApplSeqNum'].values
-        offer_seqs = df_exec['OfferApplSeqNum'].values
+        bid_seqs = df_exec['BuyOrderNO'].values
+        offer_seqs = df_exec['SellOrderNO'].values
     
     if len(bid_seqs) == 0:
         return {'buy': set(), 'sell': set()}

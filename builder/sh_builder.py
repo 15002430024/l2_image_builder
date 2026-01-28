@@ -49,25 +49,39 @@ class SHImageBuilder:
         - 支持 Polars 和 Pandas DataFrame
         - 向量化实现，高性能
         - 简化的委托处理逻辑（数据已预处理）
+        - 支持分离分位数模式（成交/委托独立分位数）
     
     Args:
-        price_bins: 价格分位数边界 (7个值)
-        qty_bins: 数量分位数边界 (7个值)
+        trade_price_bins: 成交价格分位数边界 (7个值)
+        trade_qty_bins: 成交数量分位数边界 (7个值)
+        order_price_bins: 委托价格分位数边界 (7个值)
+        order_qty_bins: 委托数量分位数边界 (7个值)
         buy_parent: 买方母单金额映射 {OrderNO -> amount}
         sell_parent: 卖方母单金额映射 {OrderNO -> amount}
         threshold: 大单阈值
+    
+    Note:
+        - 分离模式: trade_*_bins 用于成交通道(0-6), order_*_bins 用于委托通道(7-14)
+        - 联合模式: 传入相同的 trade_*_bins 和 order_*_bins（兼容旧逻辑）
     """
     
     def __init__(
         self,
-        price_bins: np.ndarray,
-        qty_bins: np.ndarray,
+        trade_price_bins: np.ndarray,
+        trade_qty_bins: np.ndarray,
+        order_price_bins: np.ndarray,
+        order_qty_bins: np.ndarray,
         buy_parent: Dict[int, float],
         sell_parent: Dict[int, float],
         threshold: float,
     ):
-        self.price_bins = price_bins
-        self.qty_bins = qty_bins
+        # 成交表使用的分位数
+        self.trade_price_bins = trade_price_bins
+        self.trade_qty_bins = trade_qty_bins
+        # 委托表使用的分位数
+        self.order_price_bins = order_price_bins
+        self.order_qty_bins = order_qty_bins
+        
         self.buy_parent = buy_parent
         self.sell_parent = sell_parent
         self.threshold = threshold
@@ -151,9 +165,9 @@ class SHImageBuilder:
         buy_orders = df['BuyOrderNO'].to_numpy()
         sell_orders = df['SellOrderNO'].to_numpy()
         
-        # 计算 bin 索引
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 计算 bin 索引 - 使用成交专用分位数
+        price_bins = np.clip(np.digitize(prices, self.trade_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.trade_qty_bins), 0, 7)
         
         for i in range(len(prices)):
             self._fill_trade(
@@ -169,8 +183,9 @@ class SHImageBuilder:
         buy_orders = df['BuyOrderNO'].values
         sell_orders = df['SellOrderNO'].values
         
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 使用成交专用分位数
+        price_bins = np.clip(np.digitize(prices, self.trade_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.trade_qty_bins), 0, 7)
         
         for i in range(len(prices)):
             self._fill_trade(
@@ -266,8 +281,9 @@ class SHImageBuilder:
         # v3: 提取 IsAggressive 字段
         is_aggressive = df['IsAggressive'].to_numpy()
         
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 使用委托专用分位数
+        price_bins = np.clip(np.digitize(prices, self.order_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.order_qty_bins), 0, 7)
         
         for i in range(len(prices)):
             if prices[i] <= 0:
@@ -287,8 +303,9 @@ class SHImageBuilder:
         # v3: 提取 IsAggressive 字段
         is_aggressive = df['IsAggressive'].values
         
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 使用委托专用分位数
+        price_bins = np.clip(np.digitize(prices, self.order_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.order_qty_bins), 0, 7)
         
         for i in range(len(prices)):
             if prices[i] <= 0:
@@ -372,9 +389,9 @@ class SHImageBuilder:
         if len(prices) == 0:
             return
         
-        # 计算 bin 索引
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 计算 bin 索引 - 使用成交专用分位数
+        price_bins = np.clip(np.digitize(prices, self.trade_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.trade_qty_bins), 0, 7)
         
         # 通道0: 全部成交 - 向量化
         np.add.at(self.image[Channels.ALL_TRADE], (price_bins, qty_bins), 1)
@@ -478,9 +495,9 @@ class SHImageBuilder:
         if len(prices) == 0:
             return
         
-        # 计算 bin 索引
-        price_bins = np.clip(np.digitize(prices, self.price_bins), 0, 7)
-        qty_bins = np.clip(np.digitize(qtys, self.qty_bins), 0, 7)
+        # 计算 bin 索引 - 使用委托专用分位数
+        price_bins = np.clip(np.digitize(prices, self.order_price_bins), 0, 7)
+        qty_bins = np.clip(np.digitize(qtys, self.order_qty_bins), 0, 7)
         
         # v3: 新增委托 → 通道7/8 + 根据IsAggressive分流到9/10或11/12
         new_mask = ord_types == 'New'
@@ -655,8 +672,10 @@ class SHImageBuilder:
 def build_sh_image(
     df_trade: Union['pl.DataFrame', pd.DataFrame],
     df_order: Union['pl.DataFrame', pd.DataFrame],
-    price_bins: np.ndarray,
-    qty_bins: np.ndarray,
+    trade_price_bins: np.ndarray,
+    trade_qty_bins: np.ndarray,
+    order_price_bins: np.ndarray,
+    order_qty_bins: np.ndarray,
     buy_parent: Dict[int, float],
     sell_parent: Dict[int, float],
     threshold: float,
@@ -668,8 +687,10 @@ def build_sh_image(
     Args:
         df_trade: 成交表
         df_order: 委托表（已预处理）
-        price_bins: 价格分位数边界
-        qty_bins: 数量分位数边界
+        trade_price_bins: 成交价格分位数边界
+        trade_qty_bins: 成交数量分位数边界
+        order_price_bins: 委托价格分位数边界
+        order_qty_bins: 委托数量分位数边界
         buy_parent: 买方母单金额映射
         sell_parent: 卖方母单金额映射
         threshold: 大单阈值
@@ -679,8 +700,10 @@ def build_sh_image(
         [15, 8, 8] 图像
     """
     builder = SHImageBuilder(
-        price_bins=price_bins,
-        qty_bins=qty_bins,
+        trade_price_bins=trade_price_bins,
+        trade_qty_bins=trade_qty_bins,
+        order_price_bins=order_price_bins,
+        order_qty_bins=order_qty_bins,
         buy_parent=buy_parent,
         sell_parent=sell_parent,
         threshold=threshold,
@@ -695,8 +718,10 @@ def build_sh_image(
 def build_sh_image_with_stats(
     df_trade: Union['pl.DataFrame', pd.DataFrame],
     df_order: Union['pl.DataFrame', pd.DataFrame],
-    price_bins: np.ndarray,
-    qty_bins: np.ndarray,
+    trade_price_bins: np.ndarray,
+    trade_qty_bins: np.ndarray,
+    order_price_bins: np.ndarray,
+    order_qty_bins: np.ndarray,
     buy_parent: Dict[int, float],
     sell_parent: Dict[int, float],
     threshold: float,
@@ -709,8 +734,10 @@ def build_sh_image_with_stats(
         (image, channel_stats, consistency_check)
     """
     builder = SHImageBuilder(
-        price_bins=price_bins,
-        qty_bins=qty_bins,
+        trade_price_bins=trade_price_bins,
+        trade_qty_bins=trade_qty_bins,
+        order_price_bins=order_price_bins,
+        order_qty_bins=order_qty_bins,
         buy_parent=buy_parent,
         sell_parent=sell_parent,
         threshold=threshold,

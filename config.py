@@ -44,6 +44,11 @@ class Config:
     use_intent_based_channels: bool = True  # 意图导向（通道9/10从委托表填充）
     validate_channel_constraints: bool = True  # 验证 Ch7=Ch9+Ch11, Ch8=Ch10+Ch12
     
+    # ========== 分位数计算模式 ==========
+    # True: 成交和委托分别计算分位数（分离模式），保留各自分布特征
+    # False: 成交+委托联合计算分位数（联合模式，原有逻辑）
+    separate_quantile_bins: bool = True
+    
     # ========== 时间过滤（连续竞价时段）==========
     # 格式: HHMMSSmmm，如 93000000 = 09:30:00.000
     am_start: int = 93000000     # 上午开始: 09:30:00.000

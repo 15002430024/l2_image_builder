@@ -481,6 +481,213 @@ def compute_quantile_bins_sz_pandas(
     return price_bins, qty_bins
 
 
+# ==============================================================================
+# 分离分位数计算（成交/委托独立计算）
+# ==============================================================================
+
+def _compute_percentiles_safe(
+    values: np.ndarray,
+    percentiles: List[float],
+) -> np.ndarray:
+    """
+    安全计算分位数，处理空数据情况
+    
+    Args:
+        values: 值数组
+        percentiles: 分位数百分比列表
+    
+    Returns:
+        分位数边界数组，若数据为空返回全 0 数组
+    """
+    if len(values) == 0:
+        logger.warning("分位数计算: 数据为空，返回兜底值 [0, 0, ...]")
+        return np.zeros(len(percentiles))
+    
+    # 过滤无效值
+    valid = values[(~np.isnan(values)) & (values > 0)]
+    if len(valid) == 0:
+        logger.warning("分位数计算: 无有效数据（全为NaN或<=0），返回兜底值")
+        return np.zeros(len(percentiles))
+    
+    return np.percentile(valid, percentiles)
+
+
+def compute_separate_quantile_bins_sh_polars(
+    df_trade: "pl.DataFrame",
+    df_order: "pl.DataFrame",
+    percentiles: List[float] = [12.5, 25, 37.5, 50, 62.5, 75, 87.5],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    上交所分离分位数计算（Polars 版本）
+    
+    成交和委托分别独立计算分位数，保留各自的分布特征。
+    
+    Args:
+        df_trade: 成交表（已清洗）
+        df_order: 委托表（包含 OrdType 列）
+        percentiles: 分位数百分比
+    
+    Returns:
+        (trade_price_bins, trade_qty_bins, order_price_bins, order_qty_bins)
+    """
+    if not POLARS_AVAILABLE:
+        raise RuntimeError("Polars 不可用")
+    
+    # 1. 成交分位数
+    trade_prices = df_trade['Price'].drop_nulls().to_numpy()
+    trade_qtys = df_trade['Qty'].drop_nulls().to_numpy()
+    
+    tp_bins = _compute_percentiles_safe(trade_prices, percentiles)
+    tq_bins = _compute_percentiles_safe(trade_qtys, percentiles)
+    
+    # 2. 委托分位数（只取新增委托，排除撤单）
+    df_order_new = df_order.filter(pl.col('OrdType') == 'New')
+    order_prices = df_order_new['Price'].drop_nulls().to_numpy()
+    order_qtys = df_order_new['Qty'].drop_nulls().to_numpy()
+    
+    op_bins = _compute_percentiles_safe(order_prices, percentiles)
+    oq_bins = _compute_percentiles_safe(order_qtys, percentiles)
+    
+    logger.debug(
+        f"SH 分离分位数: Trade 样本=({len(trade_prices)}, {len(trade_qtys)}), "
+        f"Order 样本=({len(order_prices)}, {len(order_qtys)})"
+    )
+    
+    return tp_bins, tq_bins, op_bins, oq_bins
+
+
+def compute_separate_quantile_bins_sh_pandas(
+    df_trade: pd.DataFrame,
+    df_order: pd.DataFrame,
+    percentiles: List[float] = [12.5, 25, 37.5, 50, 62.5, 75, 87.5],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    上交所分离分位数计算（Pandas 版本）
+    """
+    # 1. 成交分位数
+    trade_prices = df_trade['Price'].dropna().values
+    trade_qtys = df_trade['Qty'].dropna().values
+    
+    tp_bins = _compute_percentiles_safe(trade_prices, percentiles)
+    tq_bins = _compute_percentiles_safe(trade_qtys, percentiles)
+    
+    # 2. 委托分位数
+    df_order_new = df_order[df_order['OrdType'] == 'New']
+    order_prices = df_order_new['Price'].dropna().values
+    order_qtys = df_order_new['Qty'].dropna().values
+    
+    op_bins = _compute_percentiles_safe(order_prices, percentiles)
+    oq_bins = _compute_percentiles_safe(order_qtys, percentiles)
+    
+    return tp_bins, tq_bins, op_bins, oq_bins
+
+
+def compute_separate_quantile_bins_sz_polars(
+    df_trade: "pl.DataFrame",
+    df_order: "pl.DataFrame",
+    percentiles: List[float] = [12.5, 25, 37.5, 50, 62.5, 75, 87.5],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    深交所分离分位数计算（Polars 版本）
+    
+    成交和委托分别独立计算分位数。
+    R3.2: 使用标准列名 Price/Qty
+    
+    Args:
+        df_trade: 成交表（包含 ExecType 列）
+        df_order: 委托表
+        percentiles: 分位数百分比
+    
+    Returns:
+        (trade_price_bins, trade_qty_bins, order_price_bins, order_qty_bins)
+    """
+    if not POLARS_AVAILABLE:
+        raise RuntimeError("Polars 不可用")
+    
+    # 1. 成交分位数（只取成交记录，排除撤单）
+    df_trade_exec = df_trade.filter(pl.col('ExecType') == '70')
+    trade_prices = df_trade_exec['Price'].drop_nulls().to_numpy()
+    trade_qtys = df_trade_exec['Qty'].drop_nulls().to_numpy()
+    
+    tp_bins = _compute_percentiles_safe(trade_prices, percentiles)
+    tq_bins = _compute_percentiles_safe(trade_qtys, percentiles)
+    
+    # 2. 委托分位数
+    order_prices = df_order['Price'].drop_nulls().to_numpy()
+    order_qtys = df_order['Qty'].drop_nulls().to_numpy()
+    
+    op_bins = _compute_percentiles_safe(order_prices, percentiles)
+    oq_bins = _compute_percentiles_safe(order_qtys, percentiles)
+    
+    logger.debug(
+        f"SZ 分离分位数: Trade 样本=({len(trade_prices)}, {len(trade_qtys)}), "
+        f"Order 样本=({len(order_prices)}, {len(order_qtys)})"
+    )
+    
+    return tp_bins, tq_bins, op_bins, oq_bins
+
+
+def compute_separate_quantile_bins_sz_pandas(
+    df_trade: pd.DataFrame,
+    df_order: pd.DataFrame,
+    percentiles: List[float] = [12.5, 25, 37.5, 50, 62.5, 75, 87.5],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    深交所分离分位数计算（Pandas 版本）
+    """
+    # 1. 成交分位数
+    df_trade_exec = df_trade[df_trade['ExecType'] == '70']
+    trade_prices = df_trade_exec['Price'].dropna().values
+    trade_qtys = df_trade_exec['Qty'].dropna().values
+    
+    tp_bins = _compute_percentiles_safe(trade_prices, percentiles)
+    tq_bins = _compute_percentiles_safe(trade_qtys, percentiles)
+    
+    # 2. 委托分位数
+    order_prices = df_order['Price'].dropna().values
+    order_qtys = df_order['Qty'].dropna().values
+    
+    op_bins = _compute_percentiles_safe(order_prices, percentiles)
+    oq_bins = _compute_percentiles_safe(order_qtys, percentiles)
+    
+    return tp_bins, tq_bins, op_bins, oq_bins
+
+
+def compute_separate_quantile_bins_auto(
+    df_trade: DataFrame,
+    df_order: DataFrame,
+    exchange: str,
+    percentiles: List[float] = [12.5, 25, 37.5, 50, 62.5, 75, 87.5],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    自动选择引擎的分离分位数计算
+    
+    Args:
+        df_trade: 成交表
+        df_order: 委托表
+        exchange: 交易所代码 ('sh' 或 'sz')
+        percentiles: 分位数百分比
+    
+    Returns:
+        (trade_price_bins, trade_qty_bins, order_price_bins, order_qty_bins)
+    """
+    exchange = exchange.lower()
+    use_polars = is_polars_df(df_trade) and is_polars_df(df_order)
+    
+    if exchange == 'sh':
+        if use_polars:
+            return compute_separate_quantile_bins_sh_polars(df_trade, df_order, percentiles)
+        else:
+            return compute_separate_quantile_bins_sh_pandas(df_trade, df_order, percentiles)
+    elif exchange == 'sz':
+        if use_polars:
+            return compute_separate_quantile_bins_sz_polars(df_trade, df_order, percentiles)
+        else:
+            return compute_separate_quantile_bins_sz_pandas(df_trade, df_order, percentiles)
+    else:
+        raise ValueError(f"不支持的交易所: {exchange}")
+
+
 def compute_quantile_bins_auto(
     df_trade: DataFrame,
     df_order: DataFrame,
