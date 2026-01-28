@@ -105,7 +105,20 @@ class BatchProcessor:
         return os.path.join(self.checkpoint_dir, f"{date}.done")
     
     def _is_processed(self, date: str) -> bool:
-        """检查日期是否已处理"""
+        """
+        检查日期是否已处理
+        
+        REQ-003 更新: 支持两种检查策略
+        - skip_existing=True: 检查 LMDB 文件是否存在（推荐）
+        - skip_existing=False: 仅检查 .done 文件
+        """
+        # 策略1: 检查 LMDB 文件存在性（REQ-003）
+        if getattr(self.config, 'skip_existing', True):
+            lmdb_path = self._get_lmdb_path(date)
+            if os.path.exists(lmdb_path):
+                return True
+        
+        # 策略2: 检查 .done 标记文件
         return os.path.exists(self._get_checkpoint_path(date))
     
     def _mark_processed(self, date: str):

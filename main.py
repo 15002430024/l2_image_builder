@@ -95,6 +95,18 @@ def process_single_stock(
         if df_trade is None or len(df_trade) == 0:
             return (stock_code, None)
         
+        # REQ-005: 数据量熔断检查（防止异常数据导致 OOM）
+        MAX_ROWS_PER_STOCK = 5_000_000  # 单只股票最大行数阈值
+        trade_rows = len(df_trade)
+        order_rows = len(df_order) if df_order is not None else 0
+        
+        if trade_rows > MAX_ROWS_PER_STOCK or order_rows > MAX_ROWS_PER_STOCK:
+            logger.warning(
+                f"{stock_code} 数据量异常: trade={trade_rows:,}, order={order_rows:,}, "
+                f"超过阈值 {MAX_ROWS_PER_STOCK:,}，跳过处理"
+            )
+            return (stock_code, None)
+        
         # 清洗数据
         cleaner = DataCleaner(verbose=False)
         if is_sh:
@@ -103,9 +115,7 @@ def process_single_stock(
         else:
             df_trade = cleaner.clean_sz_trade(df_trade)
             df_order = cleaner.clean_sz_order(df_order)
-            # 深交所需要关联撤单价格
-            from .cleaner import enrich_sz_cancel_price
-            df_trade = enrich_sz_cancel_price(df_trade, df_order)
+            # 注意: enrich_sz_cancel_price 已由 Level2ImageBuilder 内部调用，此处无需重复执行
         
         if len(df_trade) == 0:
             return (stock_code, None)
@@ -194,12 +204,40 @@ def process_single_day(
     return stats
 
 
+def _is_valid_stock_code(code: str) -> bool:
+    """
+    REQ-005: 验证股票代码有效性
+    
+    过滤掉空字符串、None、非数字代码等无效值，
+    防止加载器匹配到全市场数据导致 OOM。
+    
+    Args:
+        code: 股票代码（不含后缀）
+    
+    Returns:
+        True 如果是有效的股票代码
+    """
+    if not code or not isinstance(code, str):
+        return False
+    code = code.strip()
+    if len(code) == 0:
+        return False
+    # 有效代码应为纯数字（6位或8位）
+    if not code.isdigit():
+        return False
+    if len(code) not in (6, 8):  # 6位普通股票，8位可能是期权等
+        return False
+    return True
+
+
 def get_stock_codes_from_date(
     date: str,
     config: Config,
 ) -> List[str]:
     """
     获取某日的所有股票代码
+    
+    REQ-005 增强: 过滤无效股票代码，防止空值/异常值导致全市场数据加载。
     
     Args:
         date: 日期字符串
@@ -209,12 +247,17 @@ def get_stock_codes_from_date(
         股票代码列表，如 ["600519.SH", "000001.SZ", ...]
     """
     stock_codes = []
+    invalid_count = 0
     
     # 上交所
     try:
         sh_loader = SHDataLoader(config.raw_data_dir, use_polars=config.use_polars)
         sh_codes = sh_loader.get_stock_list(date, 'trade')
-        stock_codes.extend([f"{code}.SH" for code in sh_codes])
+        for code in sh_codes:
+            if _is_valid_stock_code(code):
+                stock_codes.append(f"{code}.SH")
+            else:
+                invalid_count += 1
     except FileNotFoundError:
         pass
     
@@ -222,9 +265,16 @@ def get_stock_codes_from_date(
     try:
         sz_loader = SZDataLoader(config.raw_data_dir, use_polars=config.use_polars)
         sz_codes = sz_loader.get_stock_list(date, 'trade')
-        stock_codes.extend([f"{code}.SZ" for code in sz_codes])
+        for code in sz_codes:
+            if _is_valid_stock_code(code):
+                stock_codes.append(f"{code}.SZ")
+            else:
+                invalid_count += 1
     except FileNotFoundError:
         pass
+    
+    if invalid_count > 0:
+        logger.warning(f"过滤掉 {invalid_count} 个无效股票代码")
     
     return stock_codes
 
@@ -329,6 +379,7 @@ def batch_process(
     parallel: bool = True,
     save_lmdb: bool = True,
     save_report: bool = True,
+    overwrite: bool = False,
 ):
     """
     批量处理多日数据
@@ -340,6 +391,7 @@ def batch_process(
         parallel: 是否使用 Dask 并行
         save_lmdb: 是否保存 LMDB
         save_report: 是否生成诊断报告
+        overwrite: 是否覆盖已存在的 LMDB 文件
     """
     total_stats = {
         'total_days': len(date_list),
@@ -379,7 +431,7 @@ def batch_process(
             
             # 保存 LMDB
             if save_lmdb:
-                lmdb_path = write_daily_lmdb(date, stock_images, config.output_dir)
+                lmdb_path = write_daily_lmdb(date, stock_images, config.output_dir, overwrite=overwrite)
                 stats = get_lmdb_stats(lmdb_path)
                 logger.info(f"已保存 LMDB: {lmdb_path}, 压缩率: {stats['compression_ratio']:.2f}x")
             
@@ -391,7 +443,8 @@ def batch_process(
                 
                 report_dir = os.path.join(config.output_dir, 'reports')
                 os.makedirs(report_dir, exist_ok=True)
-                reporter.save_report(report_dir)
+                report_path = os.path.join(report_dir, f'diagnostics_{date}.csv')
+                reporter.save_report(report_path)
                 
                 summary = reporter.get_summary()
                 logger.info(f"诊断报告: 健康 {summary.get('healthy_count', 0)}, "
@@ -511,6 +564,11 @@ def main():
         action="store_true",
         help="不生成诊断报告",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="覆盖已存在的输出文件",
+    )
     
     # 其他参数
     parser.add_argument(
@@ -543,13 +601,21 @@ def main():
     # 确保输出目录存在
     config.ensure_output_dirs()
     
-    # 确定要处理的日期
+    # 确定要处理的日期 (REQ-003: CLI 优先级高于 Config)
     if args.date:
         dates = [args.date]
     elif args.start_date and args.end_date:
         dates = generate_date_range(args.start_date, args.end_date)
+    elif config.dates:
+        # 从配置文件读取显式日期列表
+        dates = config.dates
+        logger.info(f"从配置文件读取日期列表: {len(dates)} 个日期")
+    elif config.start_date and config.end_date:
+        # 从配置文件读取日期范围
+        dates = generate_date_range(config.start_date, config.end_date)
+        logger.info(f"从配置文件读取日期范围: {config.start_date} ~ {config.end_date}")
     else:
-        parser.error("请指定 --date 或 --start-date/--end-date")
+        parser.error("请指定 --date 或 --start-date/--end-date，或在配置文件中设置 dates/start_date/end_date")
         return 1
     
     logger.info(f"待处理日期数: {len(dates)}")
@@ -567,6 +633,7 @@ def main():
         parallel=args.parallel,
         save_lmdb=not args.no_lmdb,
         save_report=not args.no_report,
+        overwrite=args.overwrite,
     )
     
     return 0

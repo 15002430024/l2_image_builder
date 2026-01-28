@@ -1,13 +1,13 @@
 # Level2 图像构建项目开发进度追踪
 
-> 本文档由 AI Agent 自动维护，记录项目开发进度和实现细节
+> 本文档记录项目开发进度和实现细节
 
 ## 📋 项目概述
 
 - **项目名称**: L2 Image Builder (Level2 数据图像化处理)
 - **创建日期**: 2026-01-21
-- **最后更新**: 2026-01-28 (REQ-002: 撤单通道数据丢失修复)
-- **当前状态**: 开发中 → **可运行**
+- **最后更新**: 2026-01-28 (REQ-005: 修复深交所撤单关联OOM)
+- **当前状态**: 开发中 → **生产就绪**
 - **目标**: 将 Level2 逐笔成交与逐笔委托数据转换为 `[15, 8, 8]` 三维图像格式
 - **执行环境**: conda中的 torch1010
 ---
@@ -128,6 +128,35 @@
 | test_verification.py | 撤单数据验证 | ✅ 通过 | 2026-01-28 | 3个测试全部通过，Ch13/Ch14有数据 |
 | .requirements/REQ-002.md | 需求文档 | ✅ 已完成 | 2026-01-28 | 状态更新为"已完成-验证通过" |
 
+### Phase 10: BUG-001 懒加载列名归一化修复
+
+| 模块 | 功能 | 状态 | 实现日期 | 说明 |
+|------|------|------|----------|------|
+| sz_loader.py | _normalize_trade_columns_lazy() | ✅ 完成 | 2026-01-28 | LazyFrame版本的成交表列名归一化 |
+| sz_loader.py | _normalize_order_columns_lazy() | ✅ 完成 | 2026-01-28 | LazyFrame版本的委托表列名归一化 |
+| sz_loader.py | load_trade_lazy() | ✅ 修复 | 2026-01-28 | 添加normalize_columns参数和归一化调用 |
+| sz_loader.py | load_order_lazy() | ✅ 修复 | 2026-01-28 | 替换简单重命名为完整归一化 |
+| main.py | process_single_stock() | ✅ 验证通过 | 2026-01-28 | 全量数据处理启动成功 |
+
+### Phase 11: REQ-003 配置化日期范围与断点续传
+
+| 模块 | 功能 | 状态 | 实现日期 | 说明 |
+|------|------|------|----------|------|
+| config.py | 日期配置字段 | ✅ 完成 | 2026-01-28 | 新增 dates, start_date, end_date, skip_existing |
+| config.yaml | 日期配置示例 | ✅ 完成 | 2026-01-28 | 添加任务范围和断点续传策略配置示例 |
+| main.py | CLI回退逻辑 | ✅ 完成 | 2026-01-28 | CLI未指定日期时从Config读取 |
+| batch_process.py | LMDB存在性检查 | ✅ 完成 | 2026-01-28 | _is_processed()支持检测LMDB文件存在 |
+
+### Phase 12: REQ-004 深交所数据重构
+
+| 模块 | 功能 | 状态 | 实现日期 | 说明 |
+|------|------|------|----------|------|
+| sz_data_reconstructor.py | 数据重构模块 | ✅ 完成 | 2026-01-28 | 按SecurityID+时间排序重写Parquet |
+| sz_data_reconstructor.py | reconstruct_sz_parquet() | ✅ 完成 | 2026-01-28 | 单日重构函数 |
+| sz_data_reconstructor.py | batch_reconstruct_sz_parquet() | ✅ 完成 | 2026-01-28 | 批量重构函数 |
+| sz_data_reconstructor.py | verify_reconstruction() | ✅ 完成 | 2026-01-28 | 重构后性能验证函数 |
+| data_loader/__init__.py | 导出重构函数 | ✅ 完成 | 2026-01-28 | 从data_loader模块导出 |
+
 ---
 
 ## 🔌 接口定义
@@ -246,7 +275,8 @@ class SZDataLoader:
     def __init__(self, raw_data_dir: str, use_polars: bool = True)
     def load_trade(self, date: str, normalize_columns: bool = True, ...) -> DataFrame
     def load_order(self, date: str, normalize_columns: bool = True, ...) -> DataFrame
-    def load_order_lazy(self, date: str, normalize_columns: bool = True, ...) -> LazyFrame
+    def load_trade_lazy(self, date: str, normalize_columns: bool = True, ...) -> LazyFrame  # BUG-001修复
+    def load_order_lazy(self, date: str, normalize_columns: bool = True, ...) -> LazyFrame  # BUG-001修复
     def enrich_cancel_price(self, trade_df, order_df) -> DataFrame
     def build_active_seqs(self, trade_df) -> Dict[str, Set[int]]
     def build_active_seqs_fast(self, trade_df) -> Dict[str, Set[int]]
@@ -262,6 +292,19 @@ class SZDataLoader:
     
     def _normalize_order_columns(self, df) -> DataFrame
         """归一化委托表列名: OrderQty → Qty"""
+    
+    # BUG-001 新增: LazyFrame版本列名归一化 (2026-01-28)
+    def _normalize_trade_columns_lazy(self, lf: pl.LazyFrame) -> pl.LazyFrame
+        """
+        LazyFrame版本的成交表归一化，支持pipeline优化
+        自动重命名列名 + 派生TickBSFlag
+        """
+    
+    def _normalize_order_columns_lazy(self, lf: pl.LazyFrame) -> pl.LazyFrame
+        """
+        LazyFrame版本的委托表归一化，支持pipeline优化
+        自动重命名TransactTime→TickTime, OrderQty→Qty等
+        """
 ```
 
 ```python
@@ -369,27 +412,87 @@ l2_image_builder/
 2. **深交所撤单价格为 0**: 必须调用 `enrich_cancel_price()` 关联委托表
 3. **大小单判定与主动方向无关**: 每笔成交同时判定买卖双方
 4. **通道 9/10 沪深对齐**: 深交所也用成交表填充（指鹿为马）
+5. **⚠️ 懒加载必须归一化**: 所有 `load_*_lazy()` 方法默认执行列名归一化，确保与即时加载输出一致 (BUG-001)
 
 ### 数据字段映射
 
-| 字段含义 | 上交所 | 深交所 |
-|----------|--------|--------|
-| 时间 | TickTime | TransactTime |
-| 价格 | Price | Price / LastPx |
-| 数量 | Qty | Qty / OrderQty / LastQty |
-| 买方 | BuyOrderNO | BidApplSeqNum |
-| 卖方 | SellOrderNO | OfferApplSeqNum |
-| 主动方向 | TickBSFlag='B'/'S' | BidSeq > OfferSeq |
+**R3.2 标准化后（系统内部统一使用）:**
+
+| 字段含义 | 标准列名 | 上交所原始 | 深交所原始(通联) |
+|----------|----------|------------|------------------|
+| 时间 | **TickTime** | TickTime | TransactTime |
+| 价格 | **Price** | Price | Price / LastPx |
+| 数量 | **Qty** | Qty | Qty / OrderQty / LastQty |
+| 买方序号 | **BuyOrderNO** | BuyOrderNO | BidApplSeqNum |
+| 卖方序号 | **SellOrderNO** | SellOrderNO | OfferApplSeqNum |
+| 业务索引 | **BizIndex** | BizIndex | ApplSeqNum |
+| 主动方向 | **TickBSFlag** | TickBSFlag | (自动派生) |
+
+**重要**: 
+- R3.2 后，深交所 loader 会自动将通联原始列名映射为标准列名
+- 下游所有模块(cleaner, calculator, builder)统一使用标准列名
+- LazyFrame 归一化通过 `_normalize_*_columns_lazy()` 方法实现 (BUG-001修复)
+
+### 已知问题
+
+1. **BUG-001 (已修复)**: 深交所懒加载缺少列名归一化
+   - **症状**: `unable to find column "TickTime"`
+   - **原因**: `load_trade_lazy()` 和 `load_order_lazy()` 未调用归一化方法
+   - **修复**: 新增 `_normalize_*_columns_lazy()` 方法并在懒加载中调用
+   - **状态**: ✅ 已修复 (2026-01-28)
+
+2. **REQ-002 (已修复)**: 深交所撤单通道数据丢失
+   - **症状**: Channel 13/14 sum=0
+   - **原因**: `Price=0` 的撤单被 `valid_mask = prices > 0` 过滤
+   - **修复**: 使用 `order_price_bins[0]` 作为占位符，只过滤 `qtys <= 0`
+   - **状态**: ✅ 已修复 (2026-01-28)
 
 ### 性能考虑
 
 1. 优先使用 Polars 的懒加载 (`scan_parquet`)
 2. 使用向量化操作，避免 `iterrows()`
 3. 大批量处理时使用 Dask 多进程
+4. LazyFrame 归一化不会产生额外中间结果，完全集成到 pipeline
 
 ---
 
 ## 📜 变更日志
+
+### [2026-01-28] - REQ-005 修复深交所撤单关联OOM
+
+**问题:**
+- 运行 `main.py` 时在某些股票上触发 OOM (Exit 137)
+- 日志显示单只股票出现 1.5 亿条撤单数据（应为全市场数据量级）
+
+**修复:**
+- `main.py`: 新增 `_is_valid_stock_code()` 函数，过滤空字符串/非数字等无效股票代码
+- `main.py`: `process_single_stock()` 增加数据量熔断检查（MAX 500万行/股票）
+- `main.py`: 移除 `process_single_stock` 中重复的 `enrich_sz_cancel_price` 调用（已由 `Level2ImageBuilder` 内部处理）
+
+**需求文档:**
+- `.requirements/REQ-005.md`: 修复深交所撤单关联OOM及性能优化
+
+---
+
+### [2026-01-28] - REQ-003/REQ-004 配置化日期与深交所数据重构
+
+**新增:**
+- `config.py`: 添加 `dates`, `start_date`, `end_date`, `skip_existing` 字段
+- `config.yaml`: 添加任务范围和断点续传策略配置示例
+- `data_loader/sz_data_reconstructor.py`: 深交所数据重构模块
+  - `reconstruct_sz_parquet()`: 单日重构（按SecurityID+时间排序）
+  - `batch_reconstruct_sz_parquet()`: 批量重构
+  - `verify_reconstruction()`: 重构后性能验证
+
+**修改:**
+- `main.py`: CLI未指定日期时自动从Config读取（CLI优先级高于Config）
+- `scripts/batch_process.py`: `_is_processed()` 支持检测LMDB文件存在性跳过
+
+**需求文档:**
+- `.requirements/REQ-003.md`: 配置化日期范围与LMDB断点续传
+- `.requirements/REQ-004.md`: 深交所数据加载修复与性能优化
+
+---
 
 ### [2026-01-21] - Prompt 3.3 归一化与整合构建器
 
@@ -1586,6 +1689,94 @@ R3.2 在 sz_loader.py 完成列名归一化后，所有下游模块必须使用�
 ---
 
 ## 📜 变更日志
+
+### [2026-01-28] - BUG-001: 深交所懒加载列名归一化缺失修复
+
+**问题描述:**
+```
+处理 20251030:  45%|█████████████▌ | 3242/7183 [02:16<55:29,  1.18stock/s]
+2026-01-28 16:23:34,662 - ERROR - 处理 300589.SZ 失败: 
+unable to find column "TickTime"; valid columns: ["TransactTime", "LastPx", "LastQty", ...]
+```
+
+**根本原因:**
+1. `sz_loader.py` 的 `load_trade()` 和 `load_order()` 方法会调用 `_normalize_trade_columns()` 和 `_normalize_order_columns()` 进行列名归一化
+2. 但 `load_trade_lazy()` 和 `load_order_lazy()` 方法**缺少归一化步骤**，直接返回原始列名的 LazyFrame
+3. `main.py` 的 `process_single_stock()` 使用 `load_trade_for_stock()` 调用懒加载方法
+4. 后续 `DataCleaner` 期望标准列名 `TickTime`，但实际数据仍然是 `TransactTime`，导致报错
+
+**受影响组件:**
+- `load_trade_lazy()`: 返回 LazyFrame 缺少列名归一化
+- `load_order_lazy()`: 仅简单重命名 `OrderQty→Qty`，缺少 `TransactTime→TickTime` 等完整归一化
+- 下游所有使用懒加载的流程（`process_single_stock`, 批量处理等）
+
+**解决方案:**
+
+1. **新增 LazyFrame 专用归一化方法:**
+   ```python
+   def _normalize_trade_columns_lazy(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+       """LazyFrame版本的成交表归一化"""
+       # 1. 列名重命名 (TransactTime→TickTime, LastPx→Price, LastQty→Qty等)
+       # 2. 派生 TickBSFlag (BuyOrderNO vs SellOrderNO)
+       return lf
+   
+   def _normalize_order_columns_lazy(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+       """LazyFrame版本的委托表归一化"""
+       # 完整映射: TransactTime→TickTime, OrderQty→Qty, ApplSeqNum→BizIndex
+       return lf
+   ```
+
+2. **修改 `load_trade_lazy()` 和 `load_order_lazy()`:**
+   ```python
+   def load_trade_lazy(..., normalize_columns: bool = True) -> pl.LazyFrame:
+       lf = scan_parquet_with_filter(...)
+       if normalize_columns:
+           lf = self._normalize_trade_columns_lazy(lf)  # 新增
+       return lf
+   
+   def load_order_lazy(..., normalize_columns: bool = True) -> pl.LazyFrame:
+       lf = scan_parquet_with_filter(...)
+       if normalize_columns:
+           lf = self._normalize_order_columns_lazy(lf)  # 替换简单重命名
+       return lf
+   ```
+
+**修改文件:**
+- `l2_image_builder/data_loader/sz_loader.py`:
+  - 新增 `_normalize_trade_columns_lazy()` (lines 421-454)
+  - 新增 `_normalize_order_columns_lazy()` (lines 456-479)
+  - 修改 `load_trade_lazy()`: 添加 `normalize_columns` 参数和归一化调用 (lines 504-570)
+  - 修改 `load_order_lazy()`: 替换简单重命名为完整归一化 (lines 572-643)
+
+**验证结果:**
+```python
+# 测试列名归一化
+loader = SZDataLoader('./通联逐笔数据')
+df = loader.load_trade_for_stock('20251030', '000001')
+print(df.columns)
+# Output: ['TickTime', 'Price', 'Qty', 'BuyOrderNO', 'SellOrderNO', 
+#          'BizIndex', 'TickBSFlag', ...]  ✅
+
+# 测试单股票处理
+stock_code, image = process_single_stock('20251030', '000001.SZ', config)
+print(image.shape)  # (15, 8, 8) ✅
+
+# 全量处理启动成功
+python -m l2_image_builder.main --date 20251030 --config config.yaml
+# 处理 20251030:   1%|▏ | 38/7183 [00:39<2:02:47, 1.03s/stock] ✅
+```
+
+**技术细节:**
+- LazyFrame 的归一化操作会被 Polars 优化为 pipeline 的一部分，不会产生额外的中间结果
+- 归一化逻辑与即时加载版本完全一致，确保数据一致性
+- 默认启用归一化 (`normalize_columns=True`)，与非懒加载行为保持一致
+
+**经验教训:**
+1. **接口一致性**: 懒加载和即时加载必须提供相同的输出格式
+2. **全链路测试**: R3.2 完成列名归一化后应立即测试所有入口（即时加载、懒加载、批量处理）
+3. **文档同步**: 接口文档应明确说明输出数据的列名规范
+
+---
 
 ### [2026-01-28] - REQ-002: 深交所撤单通道数据修复
 

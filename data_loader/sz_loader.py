@@ -75,7 +75,7 @@ TRADE_COLUMN_RENAME_MAP = {
     'LastQty': 'Qty',
     'BidApplSeqNum': 'BuyOrderNO',
     'OfferApplSeqNum': 'SellOrderNO',
-    'ApplSeqNum': 'BizIndex',
+    # 注意: 成交表没有 ApplSeqNum 字段，有 BizIndex
 }
 
 # 委托表列名映射（补充）
@@ -401,6 +401,67 @@ class SZDataLoader:
         
         return df
     
+    def _normalize_trade_columns_lazy(self, lf: "pl.LazyFrame") -> "pl.LazyFrame":
+        """
+        R3.2: 归一化成交表列名（LazyFrame 版本）
+        
+        将通联原始字段映射为系统标准字段：
+        - TransactTime -> TickTime
+        - LastPx -> Price
+        - LastQty -> Qty
+        - BidApplSeqNum -> BuyOrderNO
+        - OfferApplSeqNum -> SellOrderNO
+        - ApplSeqNum -> BizIndex
+        
+        同时派生 TickBSFlag 字段（深交所主动性标识）
+        
+        Args:
+            lf: 原始成交数据 LazyFrame
+        
+        Returns:
+            列名归一化后的 LazyFrame（含 TickBSFlag）
+        """
+        # 无条件重命名，避免检查列名触发 schema 解析
+        # Polars 会自动忽略不存在的列
+        lf = lf.rename(TRADE_COLUMN_RENAME_MAP)
+        logger.debug(f"深交所成交表列名归一化(lazy): {TRADE_COLUMN_RENAME_MAP}")
+        
+        # 派生 TickBSFlag（深交所：SeqNum 较大者为主动方）
+        # 使用重命名后的标准列名
+        lf = lf.with_columns(
+            pl.when(pl.col('BuyOrderNO') > pl.col('SellOrderNO'))
+            .then(pl.lit('B'))
+            .when(pl.col('SellOrderNO') > pl.col('BuyOrderNO'))
+            .then(pl.lit('S'))
+            .otherwise(pl.lit('N'))
+            .alias('TickBSFlag')
+        )
+        logger.debug("深交所成交表: 派生 TickBSFlag 字段(lazy)")
+        
+        return lf
+    
+    def _normalize_order_columns_lazy(self, lf: "pl.LazyFrame") -> "pl.LazyFrame":
+        """
+        R3.2: 归一化委托表列名（LazyFrame 版本）
+        
+        将通联原始字段映射为系统标准字段：
+        - TransactTime -> TickTime
+        - OrderQty -> Qty
+        - ApplSeqNum -> BizIndex
+        
+        Args:
+            lf: 原始委托数据 LazyFrame
+        
+        Returns:
+            列名归一化后的 LazyFrame
+        """
+        # 无条件重命名，避免检查列名触发 schema 解析
+        # Polars 会自动忽略不存在的列
+        lf = lf.rename(ORDER_COLUMN_RENAME_MAP)
+        logger.debug(f"深交所委托表列名归一化(lazy): {ORDER_COLUMN_RENAME_MAP}")
+        
+        return lf
+
     def load_both(
         self,
         date: str,
@@ -443,11 +504,14 @@ class SZDataLoader:
         stock_codes: Optional[List[str]] = None,
         time_ranges: Optional[List[Tuple[int, int]]] = None,
         minimal_columns: bool = False,
+        normalize_columns: bool = True,
     ) -> "pl.LazyFrame":
         """
         懒加载成交数据（仅 Polars）
         
         使用 scan_parquet 进行懒加载，支持谓词下推优化。
+        
+        R3.2 更新：支持列名归一化，与 load_trade 行为一致。
         
         Args:
             date: 日期字符串
@@ -455,9 +519,10 @@ class SZDataLoader:
             stock_codes: 要过滤的股票代码列表（谓词下推）
             time_ranges: 时间范围（谓词下推），None 使用默认连续竞价时段
             minimal_columns: 是否只加载最小列
+            normalize_columns: 是否归一化列名（默认 True）
         
         Returns:
-            pl.LazyFrame 懒加载帧
+            pl.LazyFrame 懒加载帧（列名已归一化）
         """
         if not self.use_polars:
             raise RuntimeError("懒加载仅支持 Polars，请设置 use_polars=True")
@@ -467,7 +532,7 @@ class SZDataLoader:
         if not filepath.exists():
             raise FileNotFoundError(f"深交所成交数据不存在: {filepath}")
         
-        # 确定要加载的列
+        # 确定要加载的列（使用原始列名，不能用归一化后的列名去读文件）
         if minimal_columns:
             columns = self.TRADE_COLUMNS_MINIMAL
         
@@ -483,6 +548,10 @@ class SZDataLoader:
             time_ranges=ranges,
             time_column="TransactTime",
         )
+        
+        # R3.2: 列名归一化（通联原始 -> 系统标准）
+        if normalize_columns:
+            lf = self._normalize_trade_columns_lazy(lf)
         
         return lf
     
@@ -536,17 +605,13 @@ class SZDataLoader:
             time_column="TransactTime",
         )
         
-        # v3: 列名归一化
+        # R3.2: 完整列名归一化（包括 TransactTime -> TickTime, OrderQty -> Qty 等）
         if normalize_columns:
-            if 'OrderQty' in lf.columns:
-                lf = lf.rename({'OrderQty': 'Qty'})
+            lf = self._normalize_order_columns_lazy(lf)
         
         # 添加正值过滤（使用归一化后的列名）
-        qty_col = "Qty" if normalize_columns and 'OrderQty' in (columns or self.ORDER_COLUMNS_MINIMAL_RAW) else "OrderQty"
-        if qty_col == "Qty":
-            lf = lf.filter((pl.col("Price") > 0) & (pl.col("Qty") > 0))
-        else:
-            lf = lf.filter((pl.col("Price") > 0) & (pl.col("OrderQty") > 0))
+        qty_col = "Qty" if normalize_columns else "OrderQty"
+        lf = lf.filter((pl.col("Price") > 0) & (pl.col(qty_col) > 0))
         
         return lf
     

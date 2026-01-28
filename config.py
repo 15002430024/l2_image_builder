@@ -48,7 +48,19 @@ class Config:
     # True: 成交和委托分别计算分位数（分离模式），保留各自分布特征
     # False: 成交+委托联合计算分位数（联合模式，原有逻辑）
     separate_quantile_bins: bool = True
+
+    # ========== 任务范围配置 (REQ-003) ==========
+    # 可通过配置文件指定日期范围，CLI参数优先级更高
+    # dates: 显式日期列表，优先级高于 start_date/end_date
+    # start_date/end_date: 日期范围（包含两端）
+    dates: Optional[List[str]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     
+    # ========== 断点续传策略 (REQ-003) ==========
+    # skip_existing: True=检测到LMDB文件存在则跳过, False=仅依赖.done文件
+    skip_existing: bool = True
+
     # ========== 时间过滤（连续竞价时段）==========
     # 格式: HHMMSSmmm，如 93000000 = 09:30:00.000
     am_start: int = 93000000     # 上午开始: 09:30:00.000
@@ -217,6 +229,18 @@ def load_config(config_path: Optional[str] = None, **overrides) -> Config:
         config = load_config(raw_data_dir="/data/level2", n_workers=16)
     """
     config_dict = {}
+
+    # 0. 自动查找默认配置文件 (如果未指定路径)
+    if config_path is None:
+        potential_paths = [
+            "config.yaml",                  # 当前目录
+            "l2_image_builder/config.yaml", # 模块目录
+            "../config.yaml"                # 上级目录
+        ]
+        for p in potential_paths:
+            if Path(p).exists():
+                config_path = p
+                break
     
     # 1. 从YAML加载
     if config_path and Path(config_path).exists():
@@ -250,6 +274,9 @@ def load_config(config_path: Optional[str] = None, **overrides) -> Config:
         config_dict["percentiles"] = tuple(config_dict["percentiles"])
     if "channel_names" in config_dict and isinstance(config_dict["channel_names"], list):
         config_dict["channel_names"] = tuple(config_dict["channel_names"])
+    
+    # 5. dates 字段保持为 list（REQ-003）
+    # YAML 中的 dates 已经是 list，无需转换
     
     return Config(**config_dict)
 

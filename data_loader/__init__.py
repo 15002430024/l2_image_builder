@@ -11,6 +11,11 @@
 
 from .sh_loader import SHDataLoader
 from .sz_loader import SZDataLoader
+from .sz_data_reconstructor import (
+    reconstruct_sz_parquet,
+    batch_reconstruct_sz_parquet,
+    verify_reconstruction,
+)
 from .polars_utils import (
     # 基础读取
     read_parquet_auto,
@@ -50,6 +55,10 @@ __all__ = [
     # 加载器
     "SHDataLoader",
     "SZDataLoader",
+    # 深交所数据重构 (REQ-004)
+    "reconstruct_sz_parquet",
+    "batch_reconstruct_sz_parquet",
+    "verify_reconstruction",
     # 基础读取
     "read_parquet_auto",
     "read_parquet_lazy",

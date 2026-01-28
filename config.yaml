@@ -5,6 +5,21 @@
 raw_data_dir: "/Users/shiyunshuo/Desktop/pythonproject/中邮基金/华泰金工vivit/通联逐笔数据"
 output_dir: "/Users/shiyunshuo/Desktop/pythonproject/中邮基金/华泰金工vivit/output"
 
+# ========== 任务范围配置 (REQ-003) ==========
+# 方式1: 显式日期列表（优先级高于 start_date/end_date）
+dates:
+  - "20251030"
+  # - "20251031"
+
+# 方式2: 日期范围（包含两端）
+# start_date: "20251030"
+# end_date: "20251031"
+
+# ========== 断点续传策略 (REQ-003) ==========
+# true: 检测到 LMDB 文件存在则跳过（推荐）
+# false: 仅依赖 .checkpoints/*.done 文件
+skip_existing: true
+
 # ========== 图像参数 ==========
 num_channels: 15
 num_price_bins: 8
