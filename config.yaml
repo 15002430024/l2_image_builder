@@ -2,8 +2,9 @@
 # 测试配置
 
 # ========== 数据路径 ==========
-raw_data_dir: "/Users/shiyunshuo/Desktop/pythonproject/中邮基金/华泰金工vivit/通联逐笔数据"
-output_dir: "/Users/shiyunshuo/Desktop/pythonproject/中邮基金/华泰金工vivit/output"
+# 从处理后的 output 目录读取数据（包含上交所拆解和深交所重构后的数据）
+raw_data_dir: "/Users/shiyunshuo/Desktop/pythonproject/中邮基金/华泰金工vivit/output"
+output_dir: "/Users/shiyunshuo/Desktop/pythonproject/中邮基金/华泰金工vivit/output/l2_images"
 
 # ========== 任务范围配置 (REQ-003) ==========
 # 方式1: 显式日期列表（优先级高于 start_date/end_date）
